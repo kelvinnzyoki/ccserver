@@ -1,9 +1,9 @@
 {
-  "name": "classic closet-back",
+  "name": "classic closet",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "nodemon server.js",
+    "prod": "nodemon server.js",
     "start": "node server.js"
   },
   "dependencies": {
@@ -22,8 +22,8 @@
     "resend": "^3.1.0",
     "axios": "^1.6.5",
     "winston": "^3.11.0",
-    "express_mongo_sanitize": "^2.2.0",
-    "xss_clean": "^0.1.4",
+    "express-mongo-sanitize": "^2.2.0",
+    "xss-clean": "^0.1.4",
     "hpp": "^0.2.3",
     "zod": "^3.22.4"
   },
