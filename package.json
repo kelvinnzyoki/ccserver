@@ -17,7 +17,7 @@
     "cookie_parser": "^1.4.6",
     "compression": "^1.7.4",
     "morgan": "^1.10.0",
-    "@prisma/client": "^5.8.0",
+    "@prisma": "^5.8.0",
     "ioredis": "^5.3.2",
     "resend": "^3.1.0",
     "axios": "^1.6.5",
