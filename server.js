@@ -50,7 +50,7 @@ dotenv.config();
 // ==========================================
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8080;
 
 // Initialize Prisma (Database)
 const prisma = new PrismaClient({
@@ -60,7 +60,7 @@ const prisma = new PrismaClient({
 // Initialize Redis (Caching)
 let redisClient = null;
 try {
-  redisClient = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
+  redisClient = new Redis(process.env.REDIS_URL, {
     password: process.env.REDIS_PASSWORD || undefined,
     retryStrategy: (times) => Math.min(times * 50, 2000),
     maxRetriesPerRequest: 3,
@@ -88,7 +88,7 @@ const logger = winston.createLogger({
 
 // Initialize Email Service
 const resend = new Resend(process.env.RESEND_API_KEY);
-const FROM_EMAIL = process.env.FROM_EMAIL || 'noreply@premiumcloset.com';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'classiccloset@cctamcc.site';
 
 // ==========================================
 // MIDDLEWARE SETUP
@@ -111,7 +111,7 @@ app.use(helmet({
 
 // CORS
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: process.env.FRONTEND_URL,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -1538,7 +1538,7 @@ app.post('/api/reviews', protect, asyncHandler(async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: 'success',
-    message: 'Premium Closet API is running',
+    message: 'Classic Closet API is running',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV,
   });
@@ -1602,7 +1602,7 @@ prisma.$connect()
 // ==========================================
 
 const server = app.listen(PORT, () => {
-  logger.info(`🚀 Premium Closet API running on port ${PORT}`);
+  logger.info(`Classic Closet API running on port ${PORT}`);
   logger.info(`📍 Environment: ${process.env.NODE_ENV}`);
   logger.info(`🌐 Frontend: ${process.env.FRONTEND_URL}`);
 });
