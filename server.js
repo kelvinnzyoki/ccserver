@@ -53,9 +53,17 @@ const app = express();
 const PORT = process.env.PORT;
 
 // Initialize Prisma (Database)
-const prisma = new PrismaClient({
-  log: process.env.NODE_ENV === 'production' ? ['query', 'error', 'warn'] : ['error'],
-});
+// Optimized for Vercel/Serverless
+let prisma;
+
+if (process.env.NODE_ENV === 'production') {
+  prisma = new PrismaClient();
+} else {
+  if (!global.prisma) {
+    global.prisma = new PrismaClient();
+  }
+  prisma = global.prisma;
+}
 
 // Initialize Redis (Caching)
 let redisClient = null;
