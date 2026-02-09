@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build": "prisma generate",
+    "vercel-build": "prisma generate",
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
