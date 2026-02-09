@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon server.js",
+    "build": "prisma generate",
     "start": "node server.js"
   },
   "engines": {
