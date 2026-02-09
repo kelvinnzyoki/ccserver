@@ -50,11 +50,11 @@ dotenv.config();
 // ==========================================
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT;
 
 // Initialize Prisma (Database)
 const prisma = new PrismaClient({
-  log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
+  log: process.env.NODE_ENV === 'production' ? ['query', 'error', 'warn'] : ['error'],
 });
 
 // Initialize Redis (Caching)
@@ -88,7 +88,7 @@ const logger = winston.createLogger({
 
 // Initialize Email Service
 const resend = new Resend(process.env.RESEND_API_KEY);
-const FROM_EMAIL = process.env.FROM_EMAIL || 'classiccloset@cctamcc.site';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'tam&cc@cctamcc.site';
 
 // ==========================================
 // MIDDLEWARE SETUP
