@@ -15,7 +15,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import axios from 'axios';
 import rateLimit from 'express-rate-limit';
-import { Resend } from 'resend';
+import  Resend  from 'resend';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import winston from 'winston';
