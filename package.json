@@ -27,7 +27,7 @@
     "jsonwebtoken": "9.0.2",
     "morgan": "1.10.0",
     "prisma": "5.8.0",
-    "resend": "3.0.0",
+    "resend": "^1.0.0",
     "winston": "3.11.0",
     "zod": "3.22.4",
     "js-beautify": "1.14.7",
