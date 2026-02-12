@@ -4,6 +4,7 @@
     {
       "src": "server.js",
       "use": "@vercel/node"
+      
     }
   ],
   "routes": [
@@ -15,5 +16,5 @@
   "env": {
     "NODE_ENV": "production"
   }
-  "buildCommand": "prisma generate"
+  
 }
