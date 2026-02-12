@@ -53,14 +53,18 @@ if (process.env.REDIS_URL) {
     // Upstash URLs start with 'rediss://' (with two 's')
     // We add 'family: 0' and 'tls' to force IPv4/v6 networking 
     // and prevent the EROFS socket error.
-    redisClient = new Redis(process.env.REDIS_URL, {
-      family: 0, 
-      tls: {
-        rejectUnauthorized: false
-      },
-      connectTimeout: 10000,
-      retryStrategy: (times) => Math.min(times * 50, 2000),
-    });
+    // Use this exact configuration for Upstash
+redisClient = new Redis(process.env.REDIS_URL, {
+  maxRetriesPerRequest: 3,
+  tls: {
+    // This is the "High IQ" part: it tells Node to accept 
+    // the cloud certificate even in a strict serverless environment
+    rejectUnauthorized: false 
+  },
+  connectTimeout: 10000 // Give it more time to connect
+   
+   retryStrategy: (times) => Math.min(times * 50, 2000),
+});
 
     redisClient.on('error', (err) => {
       console.error('Redis connection error:', err.message);
