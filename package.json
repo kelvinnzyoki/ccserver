@@ -10,9 +10,7 @@
     "build": "prisma generate",
     "postinstall": "prisma generate"
   },
-  "overrides": {
-    "js-beautify": "1.14.7"
-  },
+  
   "dependencies": {
     "@prisma/client": "5.8.0",
     "axios": "1.6.5",
@@ -31,7 +29,12 @@
     "prisma": "5.8.0",
     "resend": "3.0.0",
     "winston": "3.11.0",
-    "zod": "3.22.4"
+    "zod": "3.22.4",
+    "js-beautify": "1.14.7",
+    "@react-email/render": "latest"
+  },
+  "overrides": {
+    "js-beautify": "1.14.7"
   },
   "engines": {
     "node": ">=18.0.0",
