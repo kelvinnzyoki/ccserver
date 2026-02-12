@@ -43,18 +43,34 @@ if (process.env.NODE_ENV === 'production') {
   prisma = global.prisma;
 }
 
-// Initialize Redis (optional - falls back gracefully)
+// ==========================================
+// REDIS INITIALIZATION (UPSTASH OPTIMIZED)
+// ==========================================
 let redisClient = null;
-try {
-  if (process.env.REDIS_URL) {
+
+if (process.env.REDIS_URL) {
+  try {
+    // Upstash URLs start with 'rediss://' (with two 's')
+    // We add 'family: 0' and 'tls' to force IPv4/v6 networking 
+    // and prevent the EROFS socket error.
     redisClient = new Redis(process.env.REDIS_URL, {
+      family: 0, 
+      tls: {
+        rejectUnauthorized: false
+      },
+      connectTimeout: 10000,
       retryStrategy: (times) => Math.min(times * 50, 2000),
-      maxRetriesPerRequest: 3,
     });
-    redisClient.on('error', (err) => console.log('Redis error:', err));
+
+    redisClient.on('error', (err) => {
+      console.error('Redis connection error:', err.message);
+      // We don't exit the process; let the app use memory fallback
+    });
+    
+    console.log('✅ Redis client initialized');
+  } catch (error) {
+    console.log('⚠️ Redis initialization failed, using memory cache');
   }
-} catch (error) {
-  console.log('Redis not available, using memory cache');
 }
 
 // Initialize Logger
