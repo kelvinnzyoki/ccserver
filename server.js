@@ -31,9 +31,17 @@ const app = express();
 const PORT = process.env.PORT;
 
 // Initialize Prisma
-const prisma = new PrismaClient({
-  log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
-});
+
+let prisma;
+
+if (process.env.NODE_ENV === 'production') {
+  prisma = new PrismaClient();
+} else {
+  if (!global.prisma) {
+    global.prisma = new PrismaClient();
+  }
+  prisma = global.prisma;
+}
 
 // Initialize Redis (optional - falls back gracefully)
 let redisClient = null;
