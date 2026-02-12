@@ -1,6 +1,6 @@
 /* ==========================================
    PREMIUM CLOSET - COMPLETE BACKEND
-   Production-Ready E-Commerce API
+   Production-Ready E-Commerce API for Vercel
    ========================================== */
 
 import express from 'express';
@@ -28,61 +28,63 @@ dotenv.config();
 // ==========================================
 
 const app = express();
-const PORT = process.env.PORT;
 
-// Initialize Prisma
-
-let prisma;
-
-if (process.env.NODE_ENV === 'production') {
-  prisma = new PrismaClient();
-} else {
-  if (!global.prisma) {
-    global.prisma = new PrismaClient();
-  }
-  prisma = global.prisma;
-}
+// Prisma (lazy connection — no explicit $connect in production)
+const prisma = new PrismaClient({
+  log: process.env.NODE_ENV === 'development' ? ['query', 'info', 'warn', 'error'] : ['error'],
+});
 
 // ==========================================
-// REDIS INITIALIZATION (UPSTASH OPTIMIZED)
+// REDIS INITIALIZATION (lazy + serverless friendly)
 // ==========================================
 let redisClient = null;
 
-if (process.env.REDIS_URL) {
+const initRedis = () => {
+  if (redisClient) return redisClient;
+
+  if (!process.env.REDIS_URL) {
+    console.log('⚠️ No REDIS_URL provided → using memory cache only');
+    return null;
+  }
+
   try {
-    // Upstash URLs start with 'rediss://' (with two 's')
-    // We add 'family: 0' and 'tls' to force IPv4/v6 networking 
-    // and prevent the EROFS socket error.
-    // Use this exact configuration for Upstash
-redisClient = new Redis(process.env.REDIS_URL, {
-  maxRetriesPerRequest: 3,
-  family: 6,  // Force IPv6 (common fix for Upstash in clouds like Vercel/AWS)
-  tls: {
-    rejectUnauthorized: false
-  },
-  connectTimeout: 10000,
-  retryStrategy: (times) => Math.min(times * 50, 2000),
-});
+    redisClient = new Redis(process.env.REDIS_URL, {
+      maxRetriesPerRequest: 3,
+      family: 6,                    // Force IPv6 — fixes many Upstash/Vercel resolution issues
+      tls: { rejectUnauthorized: false },
+      connectTimeout: 10000,
+      retryStrategy: (times) => Math.min(times * 50, 2000),
+    });
 
     redisClient.on('error', (err) => {
       console.error('Redis connection error:', err.message);
-      // We don't exit the process; let the app use memory fallback
+      redisClient = null; // allow retry on next call
     });
-    
-    console.log('✅ Redis client initialized');
-  } catch (error) {
-    console.log('⚠️ Redis initialization failed, using memory cache');
-  }
-}
 
-// Initialize Logger
+    redisClient.on('connect', () => {
+      console.log('✅ Redis connected');
+    });
+
+    console.log('Redis client created (connection will happen lazily)');
+  } catch (error) {
+    console.error('Redis initialization failed:', error.message);
+    redisClient = null;
+  }
+
+  return redisClient;
+};
+
+// Logger
 const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.simple(),
+  level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
   transports: [new winston.transports.Console()],
 });
 
-// Initialize Email (optional)
+// Email (optional)
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 // ==========================================
@@ -106,13 +108,14 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(compression());
 
+// Development logging only
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-// Rate Limiters
+// Rate limiters
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100,
 });
 
@@ -128,6 +131,25 @@ const paymentLimiter = rateLimit({
 });
 
 app.use('/api/', globalLimiter);
+
+// Add simple root route for health checks & browser testing
+app.get('/', (req, res) => {
+  res.json({
+    status: 'success',
+    message: 'Premium Closet API is live',
+    environment: process.env.NODE_ENV || 'unknown',
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'success',
+    message: 'Premium Closet API is running',
+    timestamp: new Date().toISOString(),
+    redis: redisClient ? 'configured' : 'disabled',
+  });
+});
 
 // ==========================================
 // UTILITIES
@@ -180,53 +202,52 @@ const sendTokenResponse = (user, statusCode, res) => {
     });
 };
 
-// Redis helpers
+// Redis helpers (lazy init)
 const cacheSet = async (key, value, expiry = 3600) => {
-  if (redisClient) {
-    try {
-      await redisClient.setex(key, expiry, JSON.stringify(value));
-    } catch (err) {
-      logger.error('Cache set error:', err);
-    }
+  const client = initRedis();
+  if (!client) return;
+  try {
+    await client.setex(key, expiry, JSON.stringify(value));
+  } catch (err) {
+    logger.error('Cache set error:', err);
   }
 };
 
 const cacheGet = async (key) => {
-  if (redisClient) {
-    try {
-      const data = await redisClient.get(key);
-      return data ? JSON.parse(data) : null;
-    } catch (err) {
-      return null;
-    }
+  const client = initRedis();
+  if (!client) return null;
+  try {
+    const data = await client.get(key);
+    return data ? JSON.parse(data) : null;
+  } catch (err) {
+    logger.error('Cache get error:', err);
+    return null;
   }
-  return null;
 };
 
 const cacheDel = async (pattern) => {
-  if (redisClient) {
-    try {
-      const keys = await redisClient.keys(pattern);
-      if (keys.length > 0) await redisClient.del(...keys);
-    } catch (err) {
-      logger.error('Cache delete error:', err);
-    }
+  const client = initRedis();
+  if (!client) return;
+  try {
+    const keys = await client.keys(pattern);
+    if (keys.length > 0) await client.del(...keys);
+  } catch (err) {
+    logger.error('Cache delete error:', err);
   }
 };
 
 // Email helper
 const sendEmail = async (to, subject, html) => {
-  if (resend) {
-    try {
-      await resend.emails.send({
-        from: process.env.FROM_EMAIL || 'noreply@premiumcloset.com',
-        to,
-        subject,
-        html,
-      });
-    } catch (error) {
-      logger.error('Email error:', error);
-    }
+  if (!resend) return;
+  try {
+    await resend.emails.send({
+      from: process.env.FROM_EMAIL || 'noreply@premiumcloset.com',
+      to,
+      subject,
+      html,
+    });
+  } catch (error) {
+    logger.error('Email sending error:', error);
   }
 };
 
@@ -446,7 +467,7 @@ const validate = (schema) => (req, res, next) => {
 // ==========================================
 
 const getCartIdentifier = (req) => {
-  return req.user ? `user:${req.user.id}` : `session:${req.cookies.sessionId || crypto.randomUUID()}`;
+  return req.user ? `user:\( {req.user.id}` : `session: \){req.cookies.sessionId || crypto.randomUUID()}`;
 };
 
 // ==========================================
@@ -715,37 +736,45 @@ app.post('/api/newsletter/subscribe', asyncHandler(async (req, res) => {
 // ==========================================
 // ERROR HANDLING
 // ==========================================
-
 app.use('*', (req, res) => {
   res.status(404).json({ status: 'error', message: 'Route not found' });
 });
 
 app.use((err, req, res, next) => {
-  logger.error(err);
-  res.status(err.statusCode || 500).json({
+  logger.error({
+    message: err.message,
+    stack: err.stack,
+    statusCode: err.statusCode || 500,
+    path: req.path,
+  });
+
+  const status = err.statusCode || 500;
+  res.status(status).json({
     status: 'error',
-    message: err.message || 'Internal Server Error',
+    message: process.env.NODE_ENV === 'production' ? 'Internal Server Error' : err.message,
   });
 });
 
 // ==========================================
-// START SERVER
+// START SERVER — ONLY FOR LOCAL DEVELOPMENT
 // ==========================================
 
-prisma.$connect()
-  .then(() => logger.info('✅ Database connected'))
-  .catch((err) => {
-    logger.error('❌ Database failed:', err);
-    process.exit(1);
+// In Vercel / production → we DO NOT call app.listen()
+// Vercel calls the exported app directly as a serverless function
+
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    logger.info(`🚀 Server running on http://localhost:${PORT}`);
+    logger.info(`📍 Environment: development`);
   });
+}
 
-const server = app.listen(PORT, () => {
-  logger.info(`🚀 Server running on port ${PORT}`);
-  logger.info(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
-});
-
+// Graceful shutdown (useful in containers / local)
 process.on('SIGTERM', () => {
-  server.close(() => process.exit(0));
+  logger.info('SIGTERM received — shutting down');
+  process.exit(0);
 });
 
+// Export for Vercel serverless functions
 export default app;
