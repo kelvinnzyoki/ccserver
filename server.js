@@ -56,14 +56,12 @@ if (process.env.REDIS_URL) {
     // Use this exact configuration for Upstash
 redisClient = new Redis(process.env.REDIS_URL, {
   maxRetriesPerRequest: 3,
+  family: 6,  // Force IPv6 (common fix for Upstash in clouds like Vercel/AWS)
   tls: {
-    // This is the "High IQ" part: it tells Node to accept 
-    // the cloud certificate even in a strict serverless environment
-    rejectUnauthorized: false 
+    rejectUnauthorized: false
   },
-  connectTimeout: 10000 // Give it more time to connect
-   
-   retryStrategy: (times) => Math.min(times * 50, 2000),
+  connectTimeout: 10000,
+  retryStrategy: (times) => Math.min(times * 50, 2000),
 });
 
     redisClient.on('error', (err) => {
