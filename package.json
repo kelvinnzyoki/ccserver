@@ -8,9 +8,9 @@
     "start": "node server.js",
     "dev": "node server.js",
     "build": "prisma generate",
+    "vercel-build": "prisma generate",
     "postinstall": "prisma generate"
   },
-  
   "dependencies": {
     "@prisma/client": "5.8.0",
     "axios": "1.6.5",
@@ -37,7 +37,6 @@
     "js-beautify": "1.14.7"
   },
   "engines": {
-    "node": "24.0x",
-    "npm": ">=9.0.0"
+    "node": "20.x || 22.x || 24.x"
   }
 }
