@@ -1,0 +1,11 @@
+import { Router } from 'express';
+import { z } from 'zod';
+import { prisma } from '../config/prisma.js';
+import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { validate } from '../middleware/validate.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+const router=Router(); router.use(requireAuth, requireAdmin);
+router.get('/orders', asyncHandler(async(_req,res)=> res.json({status:'success',data:{orders:await prisma.order.findMany({include:{items:true,payment:true,user:true},orderBy:{createdAt:'desc'}})}})));
+router.post('/products', validate(z.object({body:z.object({name:z.string(),slug:z.string(),description:z.string(),price:z.number(),compareAtPrice:z.number().optional(),image:z.string().url(),images:z.array(z.string().url()).default([]),category:z.string(),badge:z.string().optional(),sku:z.string(),stock:z.number().int().min(0),isFeatured:z.boolean().default(false),tags:z.array(z.string()).default([])})})), asyncHandler(async(req,res)=>{ const product=await prisma.product.create({data:req.body}); res.status(201).json({status:'success',data:{product}}); }));
+router.patch('/products/:id', asyncHandler(async(req,res)=>{ const product=await prisma.product.update({where:{id:req.params.id},data:req.body}); res.json({status:'success',data:{product}}); }));
+export default router;
