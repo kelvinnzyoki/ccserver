@@ -9,7 +9,7 @@
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/server.ts"
+      "dest": "api/index.ts"
     }
   ],
   "buildCommand": "npm run vercel-build",
