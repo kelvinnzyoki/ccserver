@@ -18,6 +18,12 @@ app.use(...securityMiddleware);
 app.use('/api/payments/paystack/webhook', express.json({ verify:(req:any,_res,buf)=>{ req.rawBody=buf; } }));
 app.use(express.json({limit:'1mb'})); app.use(express.urlencoded({extended:true})); app.use(cookieParser()); app.use(compression());
 if(process.env.NODE_ENV==='development') app.use(morgan('dev'));
+app.get('/', (_req, res) => {
+  res.status(200).json({
+    status: 'success',
+    message: 'Classic Closet API is running',
+  });
+});
 app.get('/health', (_req,res)=>res.json({status:'success', service:'classic-closet-api'}));
 app.use('/api/auth', authRoutes); app.use('/api/products', productRoutes); app.use('/api/cart', cartRoutes); app.use('/api/checkout', checkoutRoutes); app.use('/api/payments', paymentRoutes); app.use('/api/orders', orderRoutes); app.use('/api/admin', adminRoutes); app.use('/api/newsletter', newsletterRoutes);
 app.use(notFound); app.use(errorHandler);
