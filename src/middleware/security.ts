@@ -1,13 +1,42 @@
+import cors from 'cors';
 import helmet from 'helmet';
 import hpp from 'hpp';
 import rateLimit from 'express-rate-limit';
-import cors from 'cors';
 import { env } from '../config/env.js';
+
+const allowedOrigins = [
+  env.FRONTEND_URL,
+  'http://localhost:3000',
+  'http://localhost:3001',
+].filter(Boolean);
+
 export const securityMiddleware = [
-  helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }),
+  helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }),
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Cart-Session'],
+  }),
   hpp(),
-  cors({ origin: env.FRONTEND_URL, credentials: true }),
-  rateLimit({ windowMs: 15*60*1000, max: 250, standardHeaders: true, legacyHeaders: false })
 ];
-export const authLimiter = rateLimit({ windowMs: 15*60*1000, max: 8, skipSuccessfulRequests: true });
-export const paymentLimiter = rateLimit({ windowMs: 60*60*1000, max: 20 });
+
+export const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { status: 'error', message: 'Too many authentication attempts. Try again later.' },
+});
+
+export const paymentLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { status: 'error', message: 'Too many payment attempts. Try again later.' },
+});
