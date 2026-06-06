@@ -1,8 +1,10 @@
 import dotenv from 'dotenv';
 import { z } from 'zod';
+
 dotenv.config();
+
 const schema = z.object({
-  NODE_ENV: z.enum(['development','test','production']).default('development'),
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().default(4000),
   DATABASE_URL: z.string().min(1),
   FRONTEND_URL: z.string().url(),
@@ -11,13 +13,18 @@ const schema = z.object({
   COOKIE_DOMAIN: z.string().optional(),
   PAYSTACK_SECRET_KEY: z.string().optional(),
   PAYSTACK_CALLBACK_URL: z.string().url().optional(),
-  MPESA_ENVIRONMENT: z.enum(['sandbox','production']).default('sandbox'),
+  MPESA_ENVIRONMENT: z.enum(['sandbox', 'production']).default('sandbox'),
   MPESA_CONSUMER_KEY: z.string().optional(),
   MPESA_CONSUMER_SECRET: z.string().optional(),
   MPESA_SHORTCODE: z.string().optional(),
   MPESA_PASSKEY: z.string().optional(),
   MPESA_CALLBACK_URL: z.string().url().optional(),
-  CURRENCY: z.string().default('KES')
+  RESEND_API_KEY: z.string().optional(),
+  RESEND_FROM_EMAIL: z.string().email().default('Classic Closet <noreply@cctamcc.site>'),
+  AFRICASTALKING_API_KEY: z.string().optional(),
+  AFRICASTALKING_USERNAME: z.string().default('sandbox'),
+  CURRENCY: z.string().default('KES'),
 });
+
 export const env = schema.parse(process.env);
 export const isProd = env.NODE_ENV === 'production';
