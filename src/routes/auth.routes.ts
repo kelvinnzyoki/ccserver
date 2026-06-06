@@ -18,11 +18,11 @@ const router = Router();
 
 const registerSchema = z.object({
   body: z.object({
-    name: z.string().min(2),
+    name: z.string().min(2, 'Name is required'),
     email: z.string().email().optional(),
     phone: z.string().min(7).optional(),
     identifier: z.string().min(3).optional(),
-    password: z.string().min(8),
+    password: z.string().min(8, 'Password must be at least 8 characters'),
   }),
 });
 
@@ -32,7 +32,7 @@ const loginSchema = z.object({
     identifier: z.string().min(3).optional(),
     email: z.string().email().optional(),
     phone: z.string().min(7).optional(),
-    password: z.string().min(1),
+    password: z.string().min(1, 'Password is required'),
   }),
 });
 
@@ -47,14 +47,16 @@ function getSessionId(req: any) {
 function normalizePhone(phone?: string) {
   if (!phone) return undefined;
   let value = String(phone).replace(/[\s-]/g, '').trim();
+  if (!value) return undefined;
   if (value.startsWith('+')) value = value.slice(1);
   if (value.startsWith('07') || value.startsWith('01')) value = `254${value.slice(1)}`;
   return value;
 }
 
 function normalizeIdentifier(raw?: string) {
-  if (!raw) return {};
+  if (!raw) return {} as { email?: string; phone?: string };
   const value = String(raw).trim();
+  if (!value) return {} as { email?: string; phone?: string };
   if (value.includes('@')) return { email: value.toLowerCase() };
   return { phone: normalizePhone(value) };
 }
@@ -63,7 +65,7 @@ function publicUser(user: any) {
   return {
     id: user.id,
     name: user.name,
-    email: user.email,
+    email: user.email?.endsWith('@phone.classic-closet.local') ? null : user.email,
     phone: user.phone,
     role: user.role,
   };
@@ -72,41 +74,45 @@ function publicUser(user: any) {
 async function mergeGuestCartIntoUser(sessionId: string | undefined, userId: string) {
   if (!sessionId) return;
 
-  const guestCart = await prisma.cart.findUnique({
-    where: { sessionId },
-    include: { items: true },
-  });
+  try {
+    const guestCart = await prisma.cart.findUnique({
+      where: { sessionId },
+      include: { items: true },
+    });
 
-  if (!guestCart) return;
+    if (!guestCart) return;
 
-  const userCart = await prisma.cart.upsert({
-    where: { userId },
-    create: { userId },
-    update: {},
-  });
+    const userCart = await prisma.cart.upsert({
+      where: { userId },
+      create: { userId },
+      update: {},
+    });
 
-  for (const item of guestCart.items) {
-    await prisma.cartItem.upsert({
-      where: {
-        cartId_productId: {
+    for (const item of guestCart.items) {
+      await prisma.cartItem.upsert({
+        where: {
+          cartId_productId: {
+            cartId: userCart.id,
+            productId: item.productId,
+          },
+        },
+        create: {
           cartId: userCart.id,
           productId: item.productId,
+          quantity: item.quantity,
+          price: item.price,
         },
-      },
-      create: {
-        cartId: userCart.id,
-        productId: item.productId,
-        quantity: item.quantity,
-        price: item.price,
-      },
-      update: {
-        quantity: { increment: item.quantity },
-        price: item.price,
-      },
-    });
-  }
+        update: {
+          quantity: { increment: item.quantity },
+          price: item.price,
+        },
+      });
+    }
 
-  await prisma.cart.delete({ where: { id: guestCart.id } }).catch(() => undefined);
+    await prisma.cart.delete({ where: { id: guestCart.id } }).catch(() => undefined);
+  } catch (error) {
+    console.error('Non-fatal: failed to merge guest cart into user cart.', error);
+  }
 }
 
 function setAuthCookies(res: any, access: string, refresh: string) {
@@ -130,7 +136,7 @@ async function issueSession(req: any, res: any, user: any, statusCode = 200) {
   await persistRefresh(user.id, refresh);
   setAuthCookies(res, access, refresh);
 
-  res.status(statusCode).json({
+  return res.status(statusCode).json({
     status: 'success',
     data: {
       user: publicUser(user),
@@ -152,8 +158,6 @@ router.post(
       throw new ApiError(400, 'Email or phone number is required');
     }
 
-    // Your current Prisma schema requires email. For phone-only signup, we safely store
-    // an internal placeholder email while login still works with the real phone number.
     const storedEmail = email || `${phone}@phone.classic-closet.local`;
 
     const existing = await prisma.user.findFirst({
@@ -177,7 +181,7 @@ router.post(
       },
     });
 
-    await issueSession(req, res, user, 201);
+    return issueSession(req, res, user, 201);
   })
 );
 
@@ -210,7 +214,7 @@ router.post(
       throw new ApiError(401, 'Invalid login details');
     }
 
-    await issueSession(req, res, user, 200);
+    return issueSession(req, res, user, 200);
   })
 );
 
@@ -224,13 +228,7 @@ router.get(
 
 router.post(
   '/logout',
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    await prisma.user.update({
-      where: { id: req.user!.id },
-      data: { refreshTokenHash: null },
-    });
-
+  asyncHandler(async (_req, res) => {
     res
       .clearCookie('access_token', cookieOptions)
       .clearCookie('refresh_token', cookieOptions)
