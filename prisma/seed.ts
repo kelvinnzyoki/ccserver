@@ -1,29 +1,26 @@
-import { PrismaClient, Prisma } from '@prisma/client';
-import productsData from './products.json' assert { type: 'json' };
+import { PrismaClient } from '@prisma/client';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const prisma = new PrismaClient();
 
-type ProductSeed = {
+type SeedProduct = {
   name: string;
   slug: string;
   description: string;
-  price: number;
-  compareAtPrice?: number | null;
   image: string;
-  images: string[];
   category: string;
-  badge?: string | null;
-  sku: string;
+  price: number;
   stock: number;
+  sizes: string[];
+  colors: string[];
+  featured: boolean;
   isActive: boolean;
-  isFeatured: boolean;
-  tags: string[];
 };
 
-const money = (value: number) => new Prisma.Decimal(value);
-
 async function main() {
-  const products = productsData as ProductSeed[];
+  const productsPath = path.join(process.cwd(), 'prisma', 'products.json');
+  const products = JSON.parse(fs.readFileSync(productsPath, 'utf8')) as SeedProduct[];
 
   for (const product of products) {
     await prisma.product.upsert({
@@ -31,35 +28,27 @@ async function main() {
       update: {
         name: product.name,
         description: product.description,
-        price: money(product.price),
-        compareAtPrice:
-          product.compareAtPrice == null ? null : money(product.compareAtPrice),
         image: product.image,
-        images: product.images,
         category: product.category,
-        badge: product.badge ?? null,
-        sku: product.sku,
+        price: product.price,
         stock: product.stock,
+        sizes: product.sizes,
+        colors: product.colors,
+        featured: product.featured,
         isActive: product.isActive,
-        isFeatured: product.isFeatured,
-        tags: product.tags,
       },
       create: {
         name: product.name,
         slug: product.slug,
         description: product.description,
-        price: money(product.price),
-        compareAtPrice:
-          product.compareAtPrice == null ? null : money(product.compareAtPrice),
         image: product.image,
-        images: product.images,
         category: product.category,
-        badge: product.badge ?? null,
-        sku: product.sku,
+        price: product.price,
         stock: product.stock,
+        sizes: product.sizes,
+        colors: product.colors,
+        featured: product.featured,
         isActive: product.isActive,
-        isFeatured: product.isFeatured,
-        tags: product.tags,
       },
     });
   }
