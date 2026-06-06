@@ -4,21 +4,29 @@ import { env } from '../config/env.js';
 import { ApiError } from '../utils/apiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
-function readBearer(req: any) {
-  return req.headers.authorization?.startsWith('Bearer ')
-    ? req.headers.authorization.slice(7)
-    : undefined;
+function getBearerToken(req: any) {
+  const header = req.headers.authorization;
+  if (typeof header === 'string' && header.startsWith('Bearer ')) {
+    return header.slice(7);
+  }
+  return undefined;
 }
 
-async function readUserFromRequest(req: any) {
-  const token = readBearer(req) || req.cookies?.access_token;
+async function getUserFromRequest(req: any) {
+  const token = getBearerToken(req) || req.cookies?.access_token;
   if (!token) return null;
 
   try {
     const payload = jwt.verify(token, env.JWT_ACCESS_SECRET) as { id: string };
-    return prisma.user.findUnique({
+    return await prisma.user.findUnique({
       where: { id: payload.id },
-      select: { id: true, email: true, name: true, role: true, phone: true },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        phone: true,
+      },
     });
   } catch {
     return null;
@@ -26,13 +34,13 @@ async function readUserFromRequest(req: any) {
 }
 
 export const optionalAuth = asyncHandler(async (req, _res, next) => {
-  const user = await readUserFromRequest(req);
+  const user = await getUserFromRequest(req);
   if (user) req.user = user;
   next();
 });
 
 export const requireAuth = asyncHandler(async (req, _res, next) => {
-  const user = await readUserFromRequest(req);
+  const user = await getUserFromRequest(req);
   if (!user) throw new ApiError(401, 'Authentication required');
   req.user = user;
   next();
