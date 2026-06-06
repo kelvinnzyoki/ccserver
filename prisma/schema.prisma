@@ -88,6 +88,13 @@ model Product {
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+cartItems  CartItem[]
+  orderItems OrderItem[]
+
+ @@index([slug])
+  @@index([category])
+  @@index([isActive])
 }
 
 model Cart {
