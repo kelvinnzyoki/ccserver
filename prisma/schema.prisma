@@ -74,27 +74,23 @@ model Product {
   slug        String   @unique
   description String
   image       String
-
   category    String
-
   price       Decimal
   stock       Int
-
   sizes       String[]
   colors      String[]
-
-  featured    Boolean @default(false)
-  isActive    Boolean @default(true)
-
+  featured    Boolean  @default(false)
+  isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-cartItems  CartItem[]
+  cartItems  CartItem[]
   orderItems OrderItem[]
 
- @@index([slug])
+  @@index([slug])
   @@index([category])
   @@index([isActive])
+  @@index([featured])
 }
 
 model Cart {
