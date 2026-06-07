@@ -61,8 +61,8 @@ router.post(
       0
     );
 
-    const shippingCost = subtotal >= 5000 ? 0 : 300;
-    const total = subtotal + shippingCost;
+    const shippingCost = 0;
+    const total = subtotal;
 
     const order = await prisma.$transaction(
       async (tx: Prisma.TransactionClient) => {
