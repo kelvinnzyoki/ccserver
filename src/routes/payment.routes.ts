@@ -13,54 +13,58 @@ import { env } from '../config/env.js';
 
 const router = Router();
 
-// ─── markPaid ─────────────────────────────────────────────────────────────────
-// Called by BOTH the webhook (server-side, async) and the verify endpoint
-// (client-side, after redirect).  Must be idempotent — if the webhook fires
-// first and the user's browser verify call arrives 2 seconds later (or vice
-// versa), we must not decrement stock twice or double-write the payment.
-
 async function markPaid(orderId: string, ref: string): Promise<void> {
-  const existing = await prisma.payment.findUnique({
-    where: { orderId },
-    select: { status: true },
-  });
-
-  // Already processed — bail out silently. This is not an error.
-  if (existing?.status === 'COMPLETED') return;
-
-  const order = await prisma.order.findUnique({
-    where: { id: orderId },
-    include: { items: true },
-  });
-
-  if (!order) throw new ApiError(404, 'Order not found');
-
   await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    await tx.payment.update({
-      where: { orderId },
+    const paymentUpdate = await tx.payment.updateMany({
+      where: {
+        orderId,
+        status: { not: 'COMPLETED' },
+      },
       data: {
         status: 'COMPLETED',
         transactionRef: ref,
         paidAt: new Date(),
+        failureReason: null,
       },
     });
+
+    // Idempotency guard: webhook and browser verify may both arrive.
+    if (paymentUpdate.count === 0) return;
 
     await tx.order.update({
       where: { id: orderId },
       data: { status: 'PAID' },
     });
+  });
+}
 
-    // Decrement stock for every item in the order
+async function releaseReservedStock(orderId: string, reason: string): Promise<void> {
+  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: { items: true, payment: true },
+    });
+
+    if (!order || order.status !== 'PENDING' || order.payment?.status === 'COMPLETED') return;
+
+    await tx.payment.updateMany({
+      where: { orderId, status: { not: 'COMPLETED' } },
+      data: { status: 'FAILED', failureReason: reason },
+    });
+
+    await tx.order.update({
+      where: { id: orderId },
+      data: { status: 'CANCELLED' },
+    });
+
     for (const item of order.items) {
       await tx.product.update({
         where: { id: item.productId },
-        data: { stock: { decrement: item.quantity } },
+        data: { stock: { increment: item.quantity } },
       });
     }
   });
 }
-
-// ─── Paystack: initialize ─────────────────────────────────────────────────────
 
 router.post(
   '/paystack/initialize/:orderId',
@@ -73,17 +77,21 @@ router.post(
     });
 
     if (!order) throw new ApiError(404, 'Order not found');
+    if (order.status === 'CANCELLED') throw new ApiError(400, 'This order was cancelled');
+    if (order.payment?.status === 'COMPLETED') throw new ApiError(400, 'This order has already been paid');
 
-    // Guard: don't re-initialize an already paid order
-    if (order.payment?.status === 'COMPLETED') {
-      throw new ApiError(400, 'This order has already been paid');
+    // Reuse existing checkout URL/reference when present to prevent duplicate Paystack sessions.
+    if (order.payment?.checkoutUrl && order.payment?.providerRef) {
+      return res.json({
+        status: 'success',
+        data: {
+          authorizationUrl: order.payment.checkoutUrl,
+          reference: order.payment.providerRef,
+        },
+      });
     }
 
-    const data = await paystack.initialize(
-      order.id,
-      order.email,
-      Number(order.total)
-    );
+    const data = await paystack.initialize(order.id, order.email, Number(order.total));
 
     await prisma.payment.update({
       where: { orderId: order.id },
@@ -95,72 +103,54 @@ router.post(
 
     res.json({
       status: 'success',
-      data: {
-        authorizationUrl: data.authorization_url,
-        reference: data.reference,
-      },
+      data: { authorizationUrl: data.authorization_url, reference: data.reference },
     });
   })
 );
-
-// ─── Paystack: verify (called by frontend after redirect) ─────────────────────
 
 router.get(
   '/paystack/verify/:reference',
   requireAuth,
   asyncHandler(async (req, res) => {
+    const payment = await prisma.payment.findFirst({ where: { providerRef: req.params.reference } });
+    if (!payment) throw new ApiError(404, 'Payment record not found');
+
     const data = await paystack.verify(req.params.reference);
 
     if (data.status !== 'success') {
+      await releaseReservedStock(payment.orderId, 'Paystack payment was not completed');
       throw new ApiError(400, 'Payment not completed');
     }
 
-    const payment = await prisma.payment.findFirst({
-      where: { providerRef: req.params.reference },
-    });
-
-    if (!payment) throw new ApiError(404, 'Payment record not found');
-
-    // markPaid is idempotent — safe to call even if webhook already ran it
     await markPaid(payment.orderId, data.reference);
-
     res.json({ status: 'success' });
   })
 );
-
-// ─── Paystack: webhook (called by Paystack servers, async) ───────────────────
 
 router.post(
   '/paystack/webhook',
   asyncHandler(async (req, res) => {
     const secret = env.PAYSTACK_SECRET_KEY || '';
+    const hash = crypto.createHmac('sha512', secret).update(JSON.stringify(req.body)).digest('hex');
 
-    const hash = crypto
-      .createHmac('sha512', secret)
-      .update(JSON.stringify(req.body))
-      .digest('hex');
-
-    if (hash !== req.headers['x-paystack-signature']) {
+    if (!secret || hash !== req.headers['x-paystack-signature']) {
       throw new ApiError(401, 'Invalid webhook signature');
     }
 
-    if (req.body.event === 'charge.success') {
-      const payment = await prisma.payment.findFirst({
-        where: { providerRef: req.body.data.reference },
-      });
-
-      if (payment) {
-        // markPaid is idempotent — safe even if verify already ran it
-        await markPaid(payment.orderId, req.body.data.reference);
+    const reference = req.body?.data?.reference;
+    if (reference) {
+      const payment = await prisma.payment.findFirst({ where: { providerRef: reference } });
+      if (payment && req.body.event === 'charge.success') {
+        await markPaid(payment.orderId, reference);
+      }
+      if (payment && (req.body.event === 'charge.failed' || req.body.event === 'charge.dispute.create')) {
+        await releaseReservedStock(payment.orderId, `Paystack event: ${req.body.event}`);
       }
     }
 
-    // Always respond 200 to Paystack immediately
     res.sendStatus(200);
   })
 );
-
-// ─── M-Pesa: STK push ────────────────────────────────────────────────────────
 
 router.post(
   '/mpesa/stk/:orderId',
@@ -173,59 +163,37 @@ router.post(
     });
 
     if (!order) throw new ApiError(404, 'Order not found');
+    if (order.status === 'CANCELLED') throw new ApiError(400, 'This order was cancelled');
+    if (order.payment?.status === 'COMPLETED') throw new ApiError(400, 'This order has already been paid');
 
-    if (order.payment?.status === 'COMPLETED') {
-      throw new ApiError(400, 'This order has already been paid');
-    }
-
-    const data = await mpesa.stkPush(
-      order.id,
-      req.body.phoneNumber,
-      Number(order.total)
-    );
+    const data = await mpesa.stkPush(order.id, req.body.phoneNumber, Number(order.total));
 
     await prisma.payment.update({
       where: { orderId: order.id },
-      data: {
-        providerRef: data.CheckoutRequestID,
-        phoneNumber: req.body.phoneNumber,
-      },
+      data: { providerRef: data.CheckoutRequestID, phoneNumber: req.body.phoneNumber },
     });
 
     res.json({ status: 'success', data });
   })
 );
 
-// ─── M-Pesa: callback (called by Safaricom servers) ──────────────────────────
-
 router.post(
   '/mpesa/callback',
   asyncHandler(async (req, res) => {
     const cb = req.body?.Body?.stkCallback;
-
     if (!cb) return res.sendStatus(200);
 
-    const payment = await prisma.payment.findFirst({
-      where: { providerRef: cb.CheckoutRequestID },
-    });
-
+    const payment = await prisma.payment.findFirst({ where: { providerRef: cb.CheckoutRequestID } });
     if (!payment) return res.sendStatus(200);
 
     if (cb.ResultCode === 0) {
       const receipt =
-        cb.CallbackMetadata?.Item?.find(
-          (x: { Name: string; Value?: string }) => x.Name === 'MpesaReceiptNumber'
-        )?.Value || cb.CheckoutRequestID;
+        cb.CallbackMetadata?.Item?.find((x: { Name: string; Value?: string }) => x.Name === 'MpesaReceiptNumber')
+          ?.Value || cb.CheckoutRequestID;
 
       await markPaid(payment.orderId, receipt);
     } else {
-      // Only mark failed if not already completed
-      if (payment.status !== 'COMPLETED') {
-        await prisma.payment.update({
-          where: { id: payment.id },
-          data: { status: 'FAILED', failureReason: cb.ResultDesc },
-        });
-      }
+      await releaseReservedStock(payment.orderId, cb.ResultDesc || 'M-Pesa payment failed or was cancelled');
     }
 
     res.sendStatus(200);
