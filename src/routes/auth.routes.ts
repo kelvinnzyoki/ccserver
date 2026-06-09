@@ -8,18 +8,19 @@ import { authLimiter } from '../middleware/security.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiError } from '../utils/apiError.js';
-import {
-  signAccess, signRefresh, persistRefresh, cookieOptions,
-} from '../services/token.service.js';
+import { signAccess, signRefresh, persistRefresh, cookieOptions } from '../services/token.service.js';
 import { createOtp, verifyOtp } from '../services/otp.service.js';
 import { trySendSms } from '../services/sms.service.js';
+import { sendOtpEmail } from '../services/email.service.js';
 import { env } from '../config/env.js';
 
 const router = Router();
 
 if (!process.env.JWT_ACCESS_SECRET || !process.env.JWT_REFRESH_SECRET) {
-  throw new Error('[auth.routes] FATAL: JWT secrets must be set in Vercel env vars.');
+  throw new Error('[auth.routes] FATAL: JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be set in Vercel env vars.');
 }
+
+// ─── Schemas ──────────────────────────────────────────────────────────────────
 
 const registerSchema = z.object({
   body: z.object({
@@ -44,6 +45,8 @@ const loginSchema = z.object({
 const otpSchema = z.object({
   body: z.object({ code: z.string().length(6).regex(/^\d{6}$/) }),
 });
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function getSessionId(req: any): string | undefined {
   const h = req.headers['x-cart-session'];
@@ -112,7 +115,7 @@ async function issueSession(req: any, res: any, user: any, status = 200) {
   res.status(status).json({ status: 'success', data: { user: publicUser(user), accessToken: access } });
 }
 
-// ─── Register ──────────────────────────────────────────────────────────────
+// ─── Register ─────────────────────────────────────────────────────────────────
 
 router.post('/register', authLimiter, validate(registerSchema), asyncHandler(async (req, res) => {
   const fromId = normalizeIdentifier(req.body.identifier);
@@ -130,16 +133,22 @@ router.post('/register', authLimiter, validate(registerSchema), asyncHandler(asy
     data: { name: req.body.name.trim(), email: storedEmail, phone, passwordHash: await bcrypt.hash(req.body.password, 12) },
   });
 
+  // Send verification OTP after registration (non-fatal — account is created regardless)
   if (phone) {
     createOtp(phone, 'PHONE_VERIFY')
-      .then((code) => trySendSms(phone, `Classic Closet: Your code is ${code}. Expires in 10 min.`))
-      .catch((e) => console.error('[auth] post-register OTP:', e));
+      .then((code) => trySendSms(phone, `Classic Closet: Your code is ${code}. Expires 10 min.`))
+      .catch((e) => console.error('[auth] phone OTP send:', e));
+  }
+  if (email) {
+    createOtp(storedEmail, 'EMAIL_VERIFY')
+      .then((code) => sendOtpEmail(storedEmail, code))
+      .catch((e) => console.error('[auth] email OTP send:', e));
   }
 
   return issueSession(req, res, user, 201);
 }));
 
-// ─── Login ─────────────────────────────────────────────────────────────────
+// ─── Login ────────────────────────────────────────────────────────────────────
 
 router.post('/login', authLimiter, validate(loginSchema), asyncHandler(async (req, res) => {
   const fromId = normalizeIdentifier(req.body.login ?? req.body.identifier ?? req.body.email ?? req.body.phone);
@@ -151,6 +160,7 @@ router.post('/login', authLimiter, validate(loginSchema), asyncHandler(async (re
     where: { OR: [...(email ? [{ email }] : []), ...(phone ? [{ phone }] : [])] },
   });
 
+  // Constant-time compare prevents user enumeration via timing
   const match = user
     ? await bcrypt.compare(req.body.password, user.passwordHash)
     : await bcrypt.compare(req.body.password, '$2a$12$invalidhashfortimingnormalization');
@@ -159,15 +169,11 @@ router.post('/login', authLimiter, validate(loginSchema), asyncHandler(async (re
   return issueSession(req, res, user, 200);
 }));
 
-// ─── Refresh ───────────────────────────────────────────────────────────────
+// ─── Refresh ──────────────────────────────────────────────────────────────────
 // Session policy:
-//   Access token  — 15 min  (short-lived; stolen token window is minimal)
-//   Refresh token — 30 days (renewed on each use via token rotation)
-//   Idle timeout  — 30 days (no activity = sign in again)
-//
-// Token rotation: each refresh call issues a NEW refresh token and invalidates
-// the old one (via hash update). A stolen refresh token is only valid until
-// the legitimate user next refreshes — at which point the hash changes.
+//   Access token  — 15 min (short-lived, minimal breach window)
+//   Refresh token — 30 days, renewed on every use (token rotation)
+//   Idle timeout  — 30 days without activity = sign in again
 
 router.post('/refresh', asyncHandler(async (req, res) => {
   const token: string | undefined = req.cookies?.refresh_token;
@@ -181,8 +187,9 @@ router.post('/refresh', asyncHandler(async (req, res) => {
   }
 
   const user = await prisma.user.findUnique({ where: { id: decoded.id } });
-  if (!user?.refreshTokenHash) throw new ApiError(401, 'Session not found');
+  if (!user?.refreshTokenHash) throw new ApiError(401, 'Session not found — please sign in again');
 
+  // Hash comparison detects stolen tokens after password change or explicit logout
   const valid = await bcrypt.compare(token, user.refreshTokenHash);
   if (!valid) throw new ApiError(401, 'Session invalid — please sign in again');
 
@@ -199,13 +206,13 @@ router.post('/refresh', asyncHandler(async (req, res) => {
   res.json({ status: 'success', data: { accessToken: newAccess, user: publicUser(user) } });
 }));
 
-// ─── Me ────────────────────────────────────────────────────────────────────
+// ─── Me ───────────────────────────────────────────────────────────────────────
 
 router.get('/me', requireAuth, asyncHandler(async (req, res) => {
   res.json({ status: 'success', data: { user: req.user } });
 }));
 
-// ─── Logout ────────────────────────────────────────────────────────────────
+// ─── Logout ───────────────────────────────────────────────────────────────────
 
 router.post('/logout', asyncHandler(async (req: any, res) => {
   if (req.user?.id) {
@@ -214,14 +221,14 @@ router.post('/logout', asyncHandler(async (req: any, res) => {
   res.clearCookie('access_token', cookieOptions).clearCookie('refresh_token', cookieOptions).json({ status: 'success' });
 }));
 
-// ─── Phone OTP ─────────────────────────────────────────────────────────────
+// ─── Phone OTP ────────────────────────────────────────────────────────────────
 
 router.post('/phone/send-otp', requireAuth, asyncHandler(async (req: any, res) => {
   const user = await prisma.user.findUnique({ where: { id: req.user.id } });
   if (!user?.phone) throw new ApiError(400, 'No phone number on account');
-  if (user.phoneVerified) throw new ApiError(400, 'Already verified');
+  if (user.phoneVerified) throw new ApiError(400, 'Phone already verified');
   const code = await createOtp(user.phone, 'PHONE_VERIFY');
-  await trySendSms(user.phone, `Classic Closet: Your code is ${code}. Valid 10 min. Do not share.`);
+  await trySendSms(user.phone, `Classic Closet: Your code is ${code}. Valid 10 min.`);
   res.json({ status: 'success', message: 'Code sent', ...(process.env.NODE_ENV !== 'production' ? { __dev_code: code } : {}) });
 }));
 
@@ -233,6 +240,31 @@ router.post('/phone/verify', requireAuth, validate(otpSchema), asyncHandler(asyn
   if (!valid) throw new ApiError(400, 'Invalid or expired code');
   await prisma.user.update({ where: { id: user.id }, data: { phoneVerified: true } });
   res.json({ status: 'success', message: 'Phone verified' });
+}));
+
+// ─── Email OTP ────────────────────────────────────────────────────────────────
+
+router.post('/email/send-otp', requireAuth, asyncHandler(async (req: any, res) => {
+  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  if (!user?.email || user.email.endsWith('@phone.classic-closet.local')) {
+    throw new ApiError(400, 'No email address on this account');
+  }
+  if (user.emailVerified) throw new ApiError(400, 'Email already verified');
+  const code = await createOtp(user.email, 'EMAIL_VERIFY');
+  await sendOtpEmail(user.email, code);
+  res.json({ status: 'success', message: 'Code sent to your email', ...(process.env.NODE_ENV !== 'production' ? { __dev_code: code } : {}) });
+}));
+
+router.post('/email/verify', requireAuth, validate(otpSchema), asyncHandler(async (req: any, res) => {
+  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  if (!user?.email || user.email.endsWith('@phone.classic-closet.local')) {
+    throw new ApiError(400, 'No email address on this account');
+  }
+  if (user.emailVerified) return res.json({ status: 'success', message: 'Already verified' });
+  const valid = await verifyOtp(user.email, 'EMAIL_VERIFY', req.body.code);
+  if (!valid) throw new ApiError(400, 'Invalid or expired code');
+  await prisma.user.update({ where: { id: user.id }, data: { emailVerified: true } });
+  res.json({ status: 'success', message: 'Email verified' });
 }));
 
 export default router;
