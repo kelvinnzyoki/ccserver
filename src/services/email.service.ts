@@ -1,9 +1,20 @@
-import { env } from '../config/env.js';
-import { ApiError } from '../utils/apiError.js';
+/**
+ * Email delivery via Resend (https://resend.com)
+ * Required env vars: RESEND_API_KEY, RESEND_FROM_EMAIL
+ */
 
-export async function sendEmailVerificationCode(email: string, code: string) {
+import { env } from '../config/env.js';
+
+interface SendEmailOptions {
+  to: string;
+  subject: string;
+  html: string;
+}
+
+export async function sendEmail({ to, subject, html }: SendEmailOptions): Promise<void> {
   if (!env.RESEND_API_KEY) {
-    throw new ApiError(500, 'RESEND_API_KEY is not configured');
+    console.warn('[email] RESEND_API_KEY not set — email not sent to:', to);
+    return;
   }
 
   const response = await fetch('https://api.resend.com/emails', {
@@ -14,20 +25,34 @@ export async function sendEmailVerificationCode(email: string, code: string) {
     },
     body: JSON.stringify({
       from: env.RESEND_FROM_EMAIL,
-      to: [email],
-      subject: 'Your Classic Closet verification code',
-      html: `
-        <div style="font-family:Arial,sans-serif;line-height:1.6">
-          <h2>Verify your email</h2>
-          <p>Your verification code is:</p>
-          <p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p>
-          <p>This code expires in 10 minutes.</p>
-        </div>
-      `,
+      to,
+      subject,
+      html,
     }),
   });
 
   if (!response.ok) {
-    throw new ApiError(502, 'Failed to send email verification code');
+    const body = await response.text().catch(() => '');
+    throw new Error(`Resend error (${response.status}): ${body}`);
   }
+}
+
+export async function sendOtpEmail(to: string, code: string): Promise<void> {
+  await sendEmail({
+    to,
+    subject: 'Verify your Classic Closet account',
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px">
+        <h1 style="font-size:24px;margin-bottom:8px">Classic Closet</h1>
+        <p style="color:#555;margin-bottom:24px">Enter this code to verify your account:</p>
+        <div style="background:#f4f4f5;border-radius:12px;padding:24px;text-align:center;
+                    font-size:36px;font-weight:bold;letter-spacing:12px;font-family:monospace">
+          ${code}
+        </div>
+        <p style="color:#999;font-size:13px;margin-top:20px">
+          Expires in 10 minutes. If you didn't request this, ignore this email.
+        </p>
+      </div>
+    `,
+  });
 }
