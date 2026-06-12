@@ -37,12 +37,7 @@ async function releaseOrderStock(
 }
 
 // ─── markPaid ─────────────────────────────────────────────────────────────────
-// Called by both the Paystack webhook (async, server-to-server) and the
-// /verify endpoint (client-side, after the payment redirect).
-//
-// FIX: stock is NO LONGER decremented here. It was already decremented
-// (reserved) at checkout creation. Decrementing again caused every paid order
-// to consume twice the stock. markPaid now only updates payment + order status.
+// Stock is decremented (reserved) at checkout creation, NOT here.
 //
 // Security guarantees:
 //  1. IDEMPOTENT — checks payment.status first; safe to call multiple times.
@@ -54,7 +49,6 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
     select: { status: true },
   });
 
-  // Already processed — webhook and verify both fired; first one won.
   if (existing?.status === 'COMPLETED') return;
 
   const order = await prisma.order.findUnique({ where: { id: orderId } });
@@ -70,8 +64,6 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
       where: { id: orderId },
       data: { status: 'PAID' },
     });
-
-    // Stock was reserved (decremented) at checkout — no further change needed.
   });
 }
 
@@ -122,7 +114,6 @@ router.get(
       throw new ApiError(400, 'Payment not completed by Paystack');
     }
 
-    // Ownership check — prevents one user verifying another user's payment.
     const payment = await prisma.payment.findFirst({
       where: {
         providerRef: req.params.reference,
@@ -145,8 +136,6 @@ router.post(
   asyncHandler(async (req, res) => {
     const secret = env.PAYSTACK_SECRET_KEY || '';
 
-    // HMAC must be computed over the exact raw bytes Paystack sent.
-    // req.rawBody is set in app.ts before the global express.json() runs.
     const rawBody: Buffer | undefined = (req as any).rawBody;
 
     if (!rawBody) {
@@ -163,7 +152,6 @@ router.post(
       return res.sendStatus(401);
     }
 
-    // Acknowledge immediately — Paystack has a short delivery timeout.
     res.sendStatus(200);
 
     if (req.body.event === 'charge.success') {
@@ -225,7 +213,6 @@ router.post(
     if (!payment) return;
 
     if (cb.ResultCode === 0) {
-      // Payment succeeded — mark as paid (stock already reserved at checkout).
       const receipt =
         cb.CallbackMetadata?.Item?.find(
           (x: { Name: string; Value?: string }) => x.Name === 'MpesaReceiptNumber'
@@ -235,10 +222,32 @@ router.post(
         console.error('[mpesa-callback] markPaid error:', err)
       );
     } else if (payment.status !== 'COMPLETED') {
-      // FIX: Payment failed — restore stock and cancel the order so inventory
-      // is not permanently locked. Previously only updated payment status.
+      // ── FIX: double-release guard ─────────────────────────────────────────
+      // The stale-order cleanup in checkout.routes.ts can independently cancel
+      // a PENDING order and release its stock if 30+ minutes pass with no
+      // payment. If Safaricom's failure callback arrives AFTER that cleanup
+      // already ran, this branch would run releaseOrderStock a second time on
+      // the same order — over-crediting inventory.
+      //
+      // Fix: check the order's CURRENT status inside the transaction. If it's
+      // already CANCELLED, stock was already released — skip silently.
       await prisma
         .$transaction(async (tx) => {
+          const order = await tx.order.findUnique({
+            where: { id: payment.orderId },
+            select: { status: true },
+          });
+
+          if (!order || order.status === 'CANCELLED') {
+            // Already released (e.g. by stale-order cleanup) — just sync
+            // the payment record so it doesn't stay PENDING forever.
+            await tx.payment.update({
+              where: { id: payment.id },
+              data: { status: 'FAILED', failureReason: cb.ResultDesc },
+            });
+            return;
+          }
+
           await releaseOrderStock(payment.orderId, tx);
 
           await tx.payment.update({
