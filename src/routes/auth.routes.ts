@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { prisma } from '../config/prisma.js';
 import { validate } from '../middleware/validate.js';
 import { authLimiter } from '../middleware/security.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, optionalAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiError } from '../utils/apiError.js';
 import {
@@ -208,7 +208,6 @@ router.post(
       },
     });
 
-    // Send verification OTP — non-fatal; account is created regardless.
     if (phone) {
       createOtp(phone, 'PHONE_VERIFY')
         .then((code) =>
@@ -250,7 +249,6 @@ router.post(
       },
     });
 
-    // Constant-time compare prevents user enumeration via timing.
     const match = user
       ? await bcrypt.compare(req.body.password, user.passwordHash)
       : await bcrypt.compare(
@@ -316,7 +314,6 @@ router.get(
 );
 
 // ─── Profile update ───────────────────────────────────────────────────────────
-// FIX: new endpoint — was missing, causing account/page.tsx PATCH to 404.
 
 router.patch(
   '/profile',
@@ -332,9 +329,24 @@ router.patch(
 );
 
 // ─── Logout ───────────────────────────────────────────────────────────────────
+// FIX: added optionalAuth middleware.
+//
+// Without it, req.user was ALWAYS undefined (nothing populated it), so
+// `if (req.user?.id)` never ran, and refreshTokenHash was never cleared
+// in the database. The cookies were cleared client-side, but the OLD
+// refresh token remained valid server-side — if it leaked or was cached
+// anywhere (e.g. a browser that restores cookies from a previous session,
+// or a service worker), POST /api/auth/refresh would still succeed and
+// silently re-authenticate the user, making logout look like it "didn't work".
+//
+// optionalAuth populates req.user from the access token if present and
+// valid, but does NOT throw if it's missing/expired — so logout always
+// returns 200 regardless of token state, while still invalidating the
+// refresh token server-side whenever possible.
 
 router.post(
   '/logout',
+  optionalAuth,
   asyncHandler(async (req: any, res) => {
     if (req.user?.id) {
       await prisma.user
@@ -344,10 +356,28 @@ router.post(
         })
         .catch(() => undefined);
     }
-    res
-      .clearCookie('access_token', cookieOptions)
-      .clearCookie('refresh_token', cookieOptions)
-      .json({ status: 'success' });
+
+    // Clear with the configured options (covers cookies set with Domain=...)
+    res.clearCookie('access_token', cookieOptions);
+    res.clearCookie('refresh_token', cookieOptions);
+
+    // FIX: ALSO clear host-only variants (no Domain attribute).
+    //
+    // If COOKIE_DOMAIN was unset at the time a user logged in, their
+    // browser received a host-only cookie (scoped to the exact hostname,
+    // no Domain attribute). clearCookie(name, cookieOptions) now sends
+    // `Domain=.cctamcc.site` — a DIFFERENT scope to the browser than the
+    // host-only cookie it's holding, so the original is never removed.
+    // That browser stays logged in indefinitely via the stale cookie,
+    // even though logout succeeds everywhere else. Clearing the no-domain
+    // variant too covers both possible cookie scopes.
+    const { domain, ...withoutDomain } = cookieOptions as Record<string, unknown>;
+    if (domain) {
+      res.clearCookie('access_token', withoutDomain);
+      res.clearCookie('refresh_token', withoutDomain);
+    }
+
+    res.json({ status: 'success' });
   })
 );
 
