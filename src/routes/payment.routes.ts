@@ -14,9 +14,6 @@ import { env } from '../config/env.js';
 const router = Router();
 
 // ─── releaseOrderStock ────────────────────────────────────────────────────────
-// Restores stock for every item in an order back to the product.
-// Called when a payment explicitly fails (M-Pesa ResultCode !== 0) or an order
-// is cancelled by the stale-order cleanup in checkout.routes.ts.
 
 async function releaseOrderStock(
   orderId: string,
@@ -134,7 +131,19 @@ router.get(
 router.post(
   '/paystack/webhook',
   asyncHandler(async (req, res) => {
-    const secret = env.PAYSTACK_SECRET_KEY || '';
+    const secret = env.PAYSTACK_SECRET_KEY;
+
+    // ── FIX 1: refuse rather than computing HMAC with an empty key ───────────
+    // HMAC-SHA512('') is computable by ANYONE without knowing the real secret.
+    // If PAYSTACK_SECRET_KEY were ever unset, the hash-comparison below would
+    // still "succeed" for a forged signature — an attacker (or a curious
+    // legitimate user, using their own `reference` from /paystack/initialize)
+    // could POST {"event":"charge.success","data":{"reference":"<theirs>"}}
+    // with a self-computed signature and get markPaid called for free.
+    if (!secret) {
+      console.error('[webhook] PAYSTACK_SECRET_KEY not configured — rejecting webhook');
+      return res.sendStatus(503);
+    }
 
     const rawBody: Buffer | undefined = (req as any).rawBody;
 
@@ -160,9 +169,24 @@ router.post(
       });
 
       if (payment) {
-        await markPaid(payment.orderId, req.body.data.reference).catch((err) =>
-          console.error('[webhook] markPaid error:', err)
-        );
+        try {
+          // ── FIX 2: defense-in-depth — confirm with Paystack's own API ──────
+          // Even with a valid HMAC, independently call Paystack's verify
+          // endpoint (the same call /paystack/verify makes) before marking
+          // paid. This means markPaid can ONLY be reached if Paystack's own
+          // servers confirm the transaction succeeded — not just because a
+          // webhook body said so.
+          const verify = await paystack.verify(req.body.data.reference);
+          if (verify.status === 'success') {
+            await markPaid(payment.orderId, req.body.data.reference);
+          } else {
+            console.error(
+              `[webhook] Paystack verify did not confirm success for ${req.body.data.reference} (status: ${verify.status})`
+            );
+          }
+        } catch (err) {
+          console.error('[webhook] verify/markPaid error:', err);
+        }
       }
     }
   })
@@ -201,7 +225,7 @@ router.post(
 router.post(
   '/mpesa/callback',
   asyncHandler(async (req, res) => {
-    res.sendStatus(200); // Acknowledge immediately
+    res.sendStatus(200); // Acknowledge immediately — Safaricom expects fast ack
 
     const cb = req.body?.Body?.stkCallback;
     if (!cb) return;
@@ -212,7 +236,62 @@ router.post(
 
     if (!payment) return;
 
+    // Already settled — nothing to do (idempotent, avoids a redundant stkQuery call)
+    if (payment.status === 'COMPLETED') return;
+
     if (cb.ResultCode === 0) {
+      // ── FIX: defense-in-depth — confirm with Safaricom's STK Query API ────
+      // Safaricom does NOT sign callbacks. A user who received their own
+      // CheckoutRequestID (returned by /mpesa/stk/:orderId to their browser)
+      // could POST a forged callback claiming ResultCode: 0 without ever
+      // entering their M-Pesa PIN. Before trusting that, independently ask
+      // Safaricom — using OUR credentials, which a client cannot forge —
+      // whether the transaction actually completed.
+      let confirmed = false;
+      try {
+        const query = await mpesa.stkQuery(cb.CheckoutRequestID);
+        confirmed = String(query.ResultCode) === '0';
+        if (!confirmed) {
+          console.error(
+            `[mpesa-callback] stkQuery did not confirm success for ${cb.CheckoutRequestID}: ${query.ResultDesc}`
+          );
+        }
+      } catch (err) {
+        console.error(
+          '[mpesa-callback] stkQuery failed:',
+          (err as any)?.response?.data ?? err
+        );
+      }
+
+      if (!confirmed) {
+        // Do not mark paid, and do not mark failed either — the real
+        // transaction may still be processing on Safaricom's side and a
+        // later legitimate callback could still arrive. Leave PENDING.
+        return;
+      }
+
+      // Secondary check: the amount Safaricom's callback says was paid must
+      // match the order total. Cheap, and catches tampering or stale refs.
+      const callbackAmount = cb.CallbackMetadata?.Item?.find(
+        (x: { Name: string; Value?: number }) => x.Name === 'Amount'
+      )?.Value;
+
+      const order = await prisma.order.findUnique({
+        where: { id: payment.orderId },
+        select: { total: true },
+      });
+
+      if (
+        callbackAmount != null &&
+        order &&
+        Number(callbackAmount) !== Number(order.total)
+      ) {
+        console.error(
+          `[mpesa-callback] Amount mismatch for order ${payment.orderId}: paid ${callbackAmount}, expected ${order.total}`
+        );
+        return; // Flag for manual review — do not auto-mark paid
+      }
+
       const receipt =
         cb.CallbackMetadata?.Item?.find(
           (x: { Name: string; Value?: string }) => x.Name === 'MpesaReceiptNumber'
@@ -222,15 +301,13 @@ router.post(
         console.error('[mpesa-callback] markPaid error:', err)
       );
     } else if (payment.status !== 'COMPLETED') {
-      // ── FIX: double-release guard ─────────────────────────────────────────
-      // The stale-order cleanup in checkout.routes.ts can independently cancel
-      // a PENDING order and release its stock if 30+ minutes pass with no
-      // payment. If Safaricom's failure callback arrives AFTER that cleanup
-      // already ran, this branch would run releaseOrderStock a second time on
-      // the same order — over-crediting inventory.
-      //
-      // Fix: check the order's CURRENT status inside the transaction. If it's
-      // already CANCELLED, stock was already released — skip silently.
+      // ── Double-release guard ─────────────────────────────────────────────
+      // The stale-order cleanup in checkout.routes.ts can independently
+      // cancel a PENDING order and release its stock after 30 minutes.
+      // If Safaricom's failure callback arrives AFTER that cleanup already
+      // ran, this would release stock a second time — over-crediting
+      // inventory. Check the order's CURRENT status inside the transaction;
+      // if already CANCELLED, stock was already released — skip silently.
       await prisma
         .$transaction(async (tx) => {
           const order = await tx.order.findUnique({
@@ -239,8 +316,6 @@ router.post(
           });
 
           if (!order || order.status === 'CANCELLED') {
-            // Already released (e.g. by stale-order cleanup) — just sync
-            // the payment record so it doesn't stay PENDING forever.
             await tx.payment.update({
               where: { id: payment.id },
               data: { status: 'FAILED', failureReason: cb.ResultDesc },
