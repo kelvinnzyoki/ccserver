@@ -300,7 +300,7 @@ router.post(
       await markPaid(payment.orderId, receipt).catch((err) =>
         console.error('[mpesa-callback] markPaid error:', err)
       );
-    } else if (payment.status !== 'COMPLETED') {
+    } else {
       // ── Double-release guard ─────────────────────────────────────────────
       // The stale-order cleanup in checkout.routes.ts can independently
       // cancel a PENDING order and release its stock after 30 minutes.
