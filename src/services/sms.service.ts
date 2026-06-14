@@ -28,6 +28,12 @@ interface AtResponse {
 }
 
 export async function sendSms(to: string, message: string): Promise<void> {
+  // Guard narrows env.AT_API_KEY from `string | undefined` to `string`,
+  // satisfying HeadersInit which only accepts string header values.
+  if (!env.AT_API_KEY || !env.AT_USERNAME) {
+    throw new Error('Africa\'s Talking credentials (AT_API_KEY, AT_USERNAME) are not set');
+  }
+
   const phone = to.startsWith('+') ? to : `+${to}`;
 
   const params = new URLSearchParams({
