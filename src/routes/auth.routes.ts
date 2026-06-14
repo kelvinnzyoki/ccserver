@@ -55,8 +55,13 @@ const otpSchema = z.object({
 
 const profileSchema = z.object({
   body: z.object({
-    name: z.string().min(2, 'Name must be at least 2 characters').trim(),
-  }),
+    name:  z.string().min(2, 'Name must be at least 2 characters').trim().optional(),
+    phone: z.string().min(7).optional(),
+    email: z.string().email('Enter a valid email address').optional(),
+  }).refine(
+    (d) => d.name || d.phone || d.email,
+    { message: 'At least one field is required' }
+  ),
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -320,11 +325,65 @@ router.patch(
   requireAuth,
   validate(profileSchema),
   asyncHandler(async (req: any, res) => {
+    const updates: Record<string, unknown> = {};
+
+    if (req.body.name) {
+      updates.name = req.body.name.trim();
+    }
+
+    if (req.body.phone) {
+      const phone = normalizePhone(req.body.phone);
+      if (!phone) throw new ApiError(400, 'Invalid phone number format');
+
+      const taken = await prisma.user.findFirst({
+        where: { phone, NOT: { id: req.user.id } },
+      });
+      if (taken) throw new ApiError(409, 'This phone number is already linked to another account');
+
+      updates.phone = phone;
+      updates.phoneVerified = false; // Reset — must re-verify the new number
+    }
+
+    if (req.body.email) {
+      const email = req.body.email.toLowerCase().trim();
+
+      const taken = await prisma.user.findFirst({
+        where: { email, NOT: { id: req.user.id } },
+      });
+      if (taken) throw new ApiError(409, 'This email is already linked to another account');
+
+      updates.email = email;
+      updates.emailVerified = false; // Reset — must re-verify the new address
+    }
+
     const user = await prisma.user.update({
       where: { id: req.user.id },
-      data: { name: req.body.name },
+      data: updates,
     });
-    res.json({ status: 'success', data: { user: publicUser(user) } });
+
+    // Auto-send OTP after adding/changing contact details so the user
+    // can verify immediately without a separate "Send code" tap.
+    if (req.body.phone && updates.phone) {
+      const phone = updates.phone as string;
+      createOtp(phone, 'PHONE_VERIFY')
+        .then((code) =>
+          trySendSms(phone, `Classic Closet: Your code is ${code}. Valid 10 min.`)
+        )
+        .catch((e) => console.error('[profile] phone OTP send:', e));
+    }
+
+    if (req.body.email && updates.email) {
+      const email = updates.email as string;
+      createOtp(email, 'EMAIL_VERIFY')
+        .then((code) => sendOtpEmail(email, code))
+        .catch((e) => console.error('[profile] email OTP send:', e));
+    }
+
+    res.json({
+      status: 'success',
+      data: { user: publicUser(user) },
+      otpSent: !!(req.body.phone || req.body.email),
+    });
   })
 );
 
