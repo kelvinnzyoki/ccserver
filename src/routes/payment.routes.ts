@@ -192,31 +192,17 @@ router.post(
   })
 );
 
-// ─── M-Pesa: STK push ────────────────────────────────────────────────────────
+// ─── M-Pesa: STK push (temporarily disabled) ────────────────────────────────
 
 router.post(
   '/mpesa/stk/:orderId',
   requireAuth,
   paymentLimiter,
-  asyncHandler(async (req, res) => {
-    const order = await prisma.order.findFirst({
-      where: { id: req.params.orderId, userId: req.user!.id },
-      include: { payment: true },
+  asyncHandler(async (_req, res) => {
+    res.status(503).json({
+      status: 'error',
+      message: 'M-Pesa payments are coming soon. Please use Paystack for now.',
     });
-
-    if (!order) throw new ApiError(404, 'Order not found');
-    if (order.payment?.status === 'COMPLETED') {
-      throw new ApiError(400, 'This order has already been paid');
-    }
-
-    const data = await mpesa.stkPush(order.id, req.body.phoneNumber, Number(order.total));
-
-    await prisma.payment.update({
-      where: { orderId: order.id },
-      data: { providerRef: data.CheckoutRequestID, phoneNumber: req.body.phoneNumber },
-    });
-
-    res.json({ status: 'success', data });
   })
 );
 

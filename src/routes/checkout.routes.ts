@@ -15,7 +15,7 @@ const PENDING_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 const schema = z.object({
   body: z.object({
-    paymentMethod: z.enum(['MPESA', 'PAYSTACK']),
+    paymentMethod: z.literal('PAYSTACK'),
     shippingAddress: z.object({
       firstName: z.string().min(2),
       lastName: z.string().min(2),
@@ -36,6 +36,10 @@ router.post(
   requireAuth,
   validate(schema),
   asyncHandler(async (req, res) => {
+    if (req.body.paymentMethod !== 'PAYSTACK') {
+      throw new ApiError(503, 'M-Pesa payments are coming soon. Please use Paystack for now.');
+    }
+
     const cart = await prisma.cart.findFirst({
       where: { userId: req.user!.id },
       include: { items: { include: { product: true } } },
