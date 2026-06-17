@@ -131,14 +131,25 @@ async function mergeGuestCart(
     for (const item of guestCart.items) {
       await prisma.cartItem.upsert({
         where: {
-          cartId_productId: {
+          // FIX: the compound unique key is cartId_productId_size, not
+          // cartId_productId. CartItem.size (String?) was added to support
+          // product variants, and Prisma generated a new compound key name
+          // to match the updated @@unique([cartId, productId, size]).
+          //
+          // item.size is preserved as-is (including null) so a guest's
+          // chosen size carries over correctly into their account cart
+          // after login, rather than being silently dropped or merged into
+          // the wrong variant.
+          cartId_productId_size: {
             cartId: userCart.id,
             productId: item.productId,
+            size: item.size,
           },
         },
         create: {
           cartId: userCart.id,
           productId: item.productId,
+          size: item.size,
           quantity: item.quantity,
           price: item.price,
         },
