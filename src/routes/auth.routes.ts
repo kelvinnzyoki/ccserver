@@ -149,7 +149,13 @@ async function mergeGuestCart(
         create: {
           cartId: userCart.id,
           productId: item.productId,
-          size: item.size,
+          // FIX: item.size is `string | null` (nullable DB column), but
+          // Prisma's generated create-input type for this field only
+          // accepts `string | undefined` — not `null` — for "no value".
+          // The compound where-clause above correctly accepts `string | null`
+          // (that's a separate, more permissive generated type), so only
+          // this create call needed the null → undefined conversion.
+          size: item.size ?? undefined,
           quantity: item.quantity,
           price: item.price,
         },
