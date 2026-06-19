@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import type { OrderStatus } from '@prisma/client';
 import { prisma } from '../config/prisma.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -23,7 +24,7 @@ router.get(
 
     // Revenue only counts orders that have actually been paid —
     // PENDING/CANCELLED orders never represent real money received.
-    const PAID_STATUSES = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const;
+    const PAID_STATUSES: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
 
     const [
       totalRevenueAgg,
@@ -42,13 +43,13 @@ router.get(
     ] = await Promise.all([
       // Total all-time revenue
       prisma.order.aggregate({
-        where: { status: { in: PAID_STATUSES as unknown as string[] } },
+        where: { status: { in: PAID_STATUSES } },
         _sum: { total: true },
       }),
       // Today's revenue
       prisma.order.aggregate({
         where: {
-          status: { in: PAID_STATUSES as unknown as string[] },
+          status: { in: PAID_STATUSES },
           createdAt: { gte: startOfToday },
         },
         _sum: { total: true },
@@ -56,7 +57,7 @@ router.get(
       // Last 7 days revenue
       prisma.order.aggregate({
         where: {
-          status: { in: PAID_STATUSES as unknown as string[] },
+          status: { in: PAID_STATUSES },
           createdAt: { gte: sevenDaysAgo },
         },
         _sum: { total: true },
@@ -68,7 +69,7 @@ router.get(
       // Paid orders in the last 30 days (for the chart denominator context)
       prisma.order.count({
         where: {
-          status: { in: PAID_STATUSES as unknown as string[] },
+          status: { in: PAID_STATUSES },
           createdAt: { gte: thirtyDaysAgo },
         },
       }),
@@ -109,7 +110,7 @@ router.get(
       // providers. 30 days is small enough this is cheap and reliable.
       prisma.order.findMany({
         where: {
-          status: { in: PAID_STATUSES as unknown as string[] },
+          status: { in: PAID_STATUSES },
           createdAt: { gte: thirtyDaysAgo },
         },
         select: { total: true, createdAt: true },
@@ -136,9 +137,9 @@ router.get(
       status: 'success',
       data: {
         revenue: {
-          total: Number(totalRevenueAgg._sum.total ?? 0),
-          today: Number(todayRevenueAgg._sum.total ?? 0),
-          last7Days: Number(last7DaysRevenueAgg._sum.total ?? 0),
+          total: Number(totalRevenueAgg._sum?.total ?? 0),
+          today: Number(todayRevenueAgg._sum?.total ?? 0),
+          last7Days: Number(last7DaysRevenueAgg._sum?.total ?? 0),
         },
         orders: {
           total: totalOrders,
