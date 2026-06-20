@@ -127,10 +127,16 @@ router.post(
     await runCartQuery(() =>
       prisma.cartItem.upsert({
         where: {
+          // `as string` is a type assertion, not a runtime change — see the
+          // identical fix and full explanation in auth.routes.ts
+          // mergeGuestCart(). Prisma's generated WhereUniqueInput type for
+          // this compound key requires `string` even though size is
+          // genuinely nullable in the schema; the query engine itself still
+          // correctly matches NULL in the actual SQL.
           cartId_productId_size: {
             cartId: cart.id,
             productId: product.id,
-            size: requestedSize ?? null,
+            size: (requestedSize ?? null) as string,
           },
         },
         create: {

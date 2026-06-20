@@ -134,16 +134,20 @@ async function mergeGuestCart(
           // FIX: the compound unique key is cartId_productId_size, not
           // cartId_productId. CartItem.size (String?) was added to support
           // product variants, and Prisma generated a new compound key name
-          // to match the updated @@unique([cartId, productId, size]).
+          // to match @@unique([cartId, productId, size]).
           //
-          // item.size is preserved as-is (including null) so a guest's
-          // chosen size carries over correctly into their account cart
-          // after login, rather than being silently dropped or merged into
-          // the wrong variant.
+          // `as string` below is a deliberate type assertion, not a runtime
+          // change: Prisma's generated WhereUniqueInput type for THIS
+          // compound key requires `string` even though size is genuinely
+          // nullable in the schema — a known gap in how Prisma generates
+          // types for nullable fields inside @@unique. The query engine
+          // itself still correctly matches/sends `null` in the actual SQL;
+          // only the TS type definition is stricter than reality. Casting
+          // preserves item.size's real value (including null) at runtime.
           cartId_productId_size: {
             cartId: userCart.id,
             productId: item.productId,
-            size: item.size,
+            size: item.size as string,
           },
         },
         create: {
