@@ -157,6 +157,7 @@ router.get(
         recentOrders: recentOrders.map((o) => ({
           id: o.id,
           orderNumber: o.orderNumber,
+          customerId: o.userId,
           customerName: o.user?.name ?? 'Unknown',
           customerContact: o.user?.email ?? o.user?.phone ?? '',
           status: o.status,
@@ -367,6 +368,25 @@ router.patch(
 // Soft-delete by default (isActive: false) to preserve order history
 // integrity — OrderItem rows reference productId and would break display
 // of past orders if the product were hard-deleted. ?hard=true forces a real
+// ─── Products: get one ──────────────────────────────────────────────────────────
+// Used by the "Edit" deep-link (?edit=<id>) so opening the edit form never
+// depends on that product happening to be on the currently loaded page of
+// the paginated list — which was the root cause of edit links silently
+// doing nothing for any product beyond page 1.
+
+router.get(
+  '/products/:id',
+  asyncHandler(async (req, res) => {
+    const product = await prisma.product.findUnique({ where: { id: req.params.id } });
+    if (!product) throw new ApiError(404, 'Product not found');
+    res.json({ status: 'success', data: { product } });
+  })
+);
+
+// ─── Products: delete ───────────────────────────────────────────────────────────
+// Soft-delete by default (isActive: false) to preserve order history
+// integrity — OrderItem rows reference productId and would break display
+// of past orders if the product were hard-deleted. ?hard=true forces a real
 // delete, which will fail with a clear error if the product has any orders.
 
 router.delete(
@@ -460,6 +480,71 @@ router.get(
         total,
         page,
         totalPages: Math.ceil(total / limit),
+      },
+    });
+  })
+);
+
+// ─── Customers: full profile ─────────────────────────────────────────────────────
+// Powers the customer detail page: contact info, every saved address, and
+// COMPLETE order history with line items, payment status/provider/reference,
+// and the shipping address used on each individual order. This is the
+// "billing information and order history" view that was previously missing
+// entirely — the customers list only ever showed aggregate totals.
+
+router.get(
+  '/customers/:id',
+  asyncHandler(async (req, res) => {
+    const customer = await prisma.user.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        emailVerified: true,
+        phoneVerified: true,
+        createdAt: true,
+        addresses: {
+          orderBy: { isDefault: 'desc' },
+        },
+      },
+    });
+
+    if (!customer) throw new ApiError(404, 'Customer not found');
+
+    const orders = await prisma.order.findMany({
+      where: { userId: req.params.id },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        items: true,
+        payment: true,
+        shippingAddress: true,
+      },
+    });
+
+    const paidOrders = orders.filter((o) =>
+      ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(o.status)
+    );
+    const totalSpent = paidOrders.reduce((sum, o) => sum + Number(o.total), 0);
+
+    res.json({
+      status: 'success',
+      data: {
+        customer: {
+          ...customer,
+          // Hide the synthetic placeholder email used for phone-only signups
+          email: customer.email.endsWith('@phone.classic-closet.local')
+            ? null
+            : customer.email,
+        },
+        orders,
+        summary: {
+          totalOrders: orders.length,
+          paidOrders: paidOrders.length,
+          totalSpent,
+        },
       },
     });
   })
