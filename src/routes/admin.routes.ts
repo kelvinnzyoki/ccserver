@@ -355,10 +355,15 @@ const updateProductSchema = z.object({
 router.patch(
   '/products/:id',
   validate(updateProductSchema),
-  asyncHandler(async (req, res) => {
+  asyncHandler(async (req: any, res) => {
+    // Use req.validated.body (the Zod-parsed, stripped copy) rather than
+    // req.body directly. validate.ts stores the cleaned result separately
+    // without mutating req.body — so req.body can still contain extra,
+    // unvalidated keys (e.g. a stray `slug` the frontend used to send on
+    // every edit) that would otherwise pass straight through to Prisma.
     const product = await prisma.product.update({
       where: { id: req.params.id },
-      data: req.body,
+      data: req.validated.body,
     });
     res.json({ status: 'success', data: { product } });
   })
