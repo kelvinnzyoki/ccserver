@@ -92,6 +92,12 @@ function normalizeIdentifier(raw?: string): { email?: string; phone?: string } {
   return { phone: normalizePhone(v) };
 }
 
+function requireEmailOrPhone(email?: string, phone?: string) {
+  if (!email && !phone) {
+    throw new ApiError(400, 'Email or phone number is required');
+  }
+}
+
 
 async function findUserForOtp(req: any, type: 'email' | 'phone') {
   if (req.user?.id) {
@@ -307,8 +313,7 @@ router.post(
     const fromId = normalizeIdentifier(req.body.identifier);
     const email = (req.body.email || fromId.email)?.toLowerCase();
     const phone = normalizePhone(req.body.phone || fromId.phone);
-    if (!email && !phone)
-      throw new ApiError(400, 'Email or phone number is required');
+    requireEmailOrPhone(email, phone);
 
     const storedEmail = email ?? `${phone}@phone.classic-closet.local`;
     const existing = await prisma.user.findFirst({
@@ -372,8 +377,7 @@ router.post(
     );
     const email = (req.body.email || fromId.email)?.toLowerCase();
     const phone = normalizePhone(req.body.phone || fromId.phone);
-    if (!email && !phone)
-      throw new ApiError(400, 'Email or phone number is required');
+    requireEmailOrPhone(email, phone);
 
     const user = await prisma.user.findFirst({
       where: {
