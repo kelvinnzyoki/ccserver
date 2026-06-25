@@ -33,6 +33,9 @@ export async function sendSms(to: string, message: string): Promise<void> {
   const apiKey = readEnv('AT_API_KEY');
   const username = readEnv('AT_USERNAME');
   const senderId = readEnv('AT_SENDER_ID');
+  const senderIdApproved =
+    readEnv('AT_SENDER_ID_APPROVED') === 'true' ||
+    readEnv('AT_USE_SENDER_ID') === 'true';
 
   if (!apiKey) throw new Error('AT_API_KEY is not set');
   if (!username) throw new Error('AT_USERNAME is not set');
@@ -43,9 +46,20 @@ export async function sendSms(to: string, message: string): Promise<void> {
     message,
   });
 
-  // Africa's Talking sandbox commonly rejects custom sender IDs. Only send
-  // `from` when it is configured and the username is not sandbox.
-  if (senderId && username.toLowerCase() !== 'sandbox') params.set('from', senderId);
+  // IMPORTANT:
+  // Do not send `from` just because AT_SENDER_ID exists.
+  // Africa's Talking production rejects unapproved sender IDs with:
+  //   InvalidSenderId / Recipients:[]
+  //
+  // Keep AT_SENDER_ID optional. By default this service omits `from`, allowing
+  // Africa's Talking to use the account/default sender. Only enable a custom
+  // sender after Africa's Talking has approved it by setting either:
+  //   AT_SENDER_ID_APPROVED=true
+  // or:
+  //   AT_USE_SENDER_ID=true
+  if (senderId && senderIdApproved && username.toLowerCase() !== 'sandbox') {
+    params.set('from', senderId);
+  }
 
   const response = await fetch('https://api.africastalking.com/version1/messaging', {
     method: 'POST',
@@ -64,7 +78,10 @@ export async function sendSms(to: string, message: string): Promise<void> {
   try { data = text ? JSON.parse(text) : {}; } catch { throw new Error(`SMS gateway returned invalid JSON: ${text}`); }
 
   const recipient = data.SMSMessageData?.Recipients?.[0];
-  if (!recipient) throw new Error(`SMS gateway returned no recipient status: ${text}`);
+  if (!recipient) {
+    const gatewayMessage = data.SMSMessageData?.Message || text || 'No recipient status returned';
+    throw new Error(`SMS gateway returned no recipient status: ${gatewayMessage}`);
+  }
 
   // 101 = Success. 102 = Queued/Sent in some AT environments.
   if (![101, 102].includes(Number(recipient.statusCode))) {
