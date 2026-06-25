@@ -10,6 +10,7 @@ import { ApiError } from '../utils/apiError.js';
 import { paystack } from '../services/paystack.service.js';
 import { mpesa } from '../services/mpesa.service.js';
 import { env } from '../config/env.js';
+import { notifyOwnerPaymentReceived } from '../services/notifications.service.js';
 
 const router = Router();
 
@@ -48,7 +49,10 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
 
   if (existing?.status === 'COMPLETED') return;
 
-  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { user: { select: { name: true } } },
+  });
   if (!order) throw new ApiError(404, 'Order not found');
 
   await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -62,6 +66,17 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
       data: { status: 'PAID' },
     });
   });
+
+  // ── Owner SMS notification ───────────────────────────────────────────────
+  // Fires AFTER the transaction commits so a failed SMS never rolls back a
+  // confirmed payment. Non-fatal — trySendSms already swallows errors.
+  notifyOwnerPaymentReceived({
+    orderNumber: order.orderNumber,
+    customerName: (order as any).user?.name ?? 'Customer',
+    total: Number(order.total),
+    method: order.paymentMethod,
+    transactionRef: ref,
+  }).catch((err) => console.error('[notify] owner SMS error:', err));
 }
 
 // ─── Paystack: initialize ─────────────────────────────────────────────────────
@@ -192,17 +207,31 @@ router.post(
   })
 );
 
-// ─── M-Pesa: STK push (temporarily disabled) ────────────────────────────────
+// ─── M-Pesa: STK push ────────────────────────────────────────────────────────
 
 router.post(
   '/mpesa/stk/:orderId',
   requireAuth,
   paymentLimiter,
-  asyncHandler(async (_req, res) => {
-    res.status(503).json({
-      status: 'error',
-      message: 'M-Pesa payments are coming soon. Please use Paystack for now.',
+  asyncHandler(async (req, res) => {
+    const order = await prisma.order.findFirst({
+      where: { id: req.params.orderId, userId: req.user!.id },
+      include: { payment: true },
     });
+
+    if (!order) throw new ApiError(404, 'Order not found');
+    if (order.payment?.status === 'COMPLETED') {
+      throw new ApiError(400, 'This order has already been paid');
+    }
+
+    const data = await mpesa.stkPush(order.id, req.body.phoneNumber, Number(order.total));
+
+    await prisma.payment.update({
+      where: { orderId: order.id },
+      data: { providerRef: data.CheckoutRequestID, phoneNumber: req.body.phoneNumber },
+    });
+
+    res.json({ status: 'success', data });
   })
 );
 
