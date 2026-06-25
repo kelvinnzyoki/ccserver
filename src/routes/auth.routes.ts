@@ -137,6 +137,78 @@ function setAuthCookies(res: any, access: string, refresh: string) {
   });
 }
 
+type PendingSignup = {
+  name: string;
+  email?: string;
+  phone?: string;
+  storedEmail: string;
+  passwordHash: string;
+  verificationType: 'email' | 'phone';
+  target: string;
+};
+
+const PENDING_SIGNUP_COOKIE = 'pending_signup';
+const PENDING_SIGNUP_MAX_AGE = 10 * 60 * 1000;
+
+function setPendingSignupCookie(res: any, pending: PendingSignup) {
+  const token = jwt.sign(pending, process.env.JWT_ACCESS_SECRET!, {
+    expiresIn: '10m',
+  });
+
+  res.cookie(PENDING_SIGNUP_COOKIE, token, {
+    ...cookieOptions,
+    maxAge: PENDING_SIGNUP_MAX_AGE,
+  });
+}
+
+function clearPendingSignupCookie(res: any) {
+  res.clearCookie(PENDING_SIGNUP_COOKIE, cookieOptions);
+
+  const { domain, ...withoutDomain } = cookieOptions as Record<string, unknown>;
+  res.clearCookie(PENDING_SIGNUP_COOKIE, withoutDomain);
+}
+
+function readPendingSignup(req: any): PendingSignup | null {
+  const token = req.cookies?.[PENDING_SIGNUP_COOKIE];
+  if (!token || typeof token !== 'string') return null;
+
+  try {
+    return jwt.verify(token, process.env.JWT_ACCESS_SECRET!) as PendingSignup;
+  } catch {
+    return null;
+  }
+}
+
+async function finishPendingSignup(req: any, res: any, pending: PendingSignup) {
+  const existing = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { email: pending.storedEmail },
+        ...(pending.phone ? [{ phone: pending.phone }] : []),
+      ],
+    },
+  });
+
+  if (existing) {
+    clearPendingSignupCookie(res);
+    throw new ApiError(409, 'An account with this email or phone already exists');
+  }
+
+  const user = await prisma.user.create({
+    data: {
+      name: pending.name,
+      email: pending.storedEmail,
+      phone: pending.phone,
+      passwordHash: pending.passwordHash,
+      emailVerified: pending.verificationType === 'email',
+      phoneVerified: pending.verificationType === 'phone',
+    },
+  });
+
+  clearPendingSignupCookie(res);
+  return issueSession(req, res, user, 201);
+}
+
 async function mergeGuestCart(
   sessionId: string | undefined,
   userId: string
@@ -250,30 +322,39 @@ router.post(
         'An account with this email or phone already exists'
       );
 
-    const user = await prisma.user.create({
-      data: {
-        name: req.body.name.trim(),
-        email: storedEmail,
-        phone,
-        passwordHash: await bcrypt.hash(req.body.password, 12),
-      },
-    });
+    const verificationType: 'email' | 'phone' = email ? 'email' : 'phone';
+    const target = email ?? phone!;
+
+    const pendingSignup: PendingSignup = {
+      name: req.body.name.trim(),
+      email,
+      phone,
+      storedEmail,
+      passwordHash: await bcrypt.hash(req.body.password, 12),
+      verificationType,
+      target,
+    };
 
     if (email) {
       const code = await createOtp(email, 'EMAIL_VERIFY', true);
       await sendOtpEmail(email, code);
-    } else if (phone) {
-      const code = await createOtp(phone, 'PHONE_VERIFY', true);
-      await trySendSms(phone, `Classic Closet: Your code is ${code}. Valid 10 min.`);
+    } else {
+      const code = await createOtp(phone!, 'PHONE_VERIFY', true);
+      const sent = await trySendSms(phone!, `Classic Closet: Your code is ${code}. Valid 10 min.`);
+      if (!sent) {
+        throw new ApiError(502, 'SMS verification code could not be sent. Please check your SMS provider setup.');
+      }
     }
+
+    setPendingSignupCookie(res, pendingSignup);
 
     res.status(201).json({
       status: 'success',
       message: email ? 'Code sent to your email' : 'Code sent to your phone',
       data: {
         requiresVerification: true,
-        verificationType: email ? 'email' : 'phone',
-        identifier: email ?? phone,
+        verificationType,
+        identifier: target,
       },
     });
   })
@@ -477,11 +558,35 @@ router.post(
   '/phone/send-otp',
   optionalAuth,
   asyncHandler(async (req: any, res) => {
+    const pending = readPendingSignup(req);
+    const requested = normalizePhone(req.body?.phone || req.body?.identifier);
+
+    if (pending?.verificationType === 'phone') {
+      if (requested && requested !== pending.target) {
+        throw new ApiError(400, 'This signup is for a different phone number');
+      }
+
+      const code = await createOtp(pending.target, 'PHONE_VERIFY');
+      const sent = await trySendSms(pending.target, `Classic Closet: Your code is ${code}. Valid 10 min.`);
+      if (!sent) {
+        throw new ApiError(502, 'SMS verification code could not be sent. Please check your SMS provider setup.');
+      }
+
+      return res.json({
+        status: 'success',
+        message: 'Code sent',
+        ...(process.env.NODE_ENV !== 'production' ? { __dev_code: code } : {}),
+      });
+    }
+
     const user = await findUserForOtp(req, 'phone');
     if (!user?.phone) throw new ApiError(400, 'No phone number on account');
     if (user.phoneVerified) throw new ApiError(400, 'Phone already verified');
     const code = await createOtp(user.phone, 'PHONE_VERIFY');
-    await trySendSms(user.phone, `Classic Closet: Your code is ${code}. Valid 10 min.`);
+    const sent = await trySendSms(user.phone, `Classic Closet: Your code is ${code}. Valid 10 min.`);
+    if (!sent) {
+      throw new ApiError(502, 'SMS verification code could not be sent. Please check your SMS provider setup.');
+    }
     res.json({
       status: 'success',
       message: 'Code sent',
@@ -495,6 +600,20 @@ router.post(
   optionalAuth,
   validate(otpSchema),
   asyncHandler(async (req: any, res) => {
+    const pending = readPendingSignup(req);
+    const requested = normalizePhone(req.body.phone || req.body.identifier);
+
+    if (pending?.verificationType === 'phone') {
+      if (requested && requested !== pending.target) {
+        throw new ApiError(400, 'This code is for a different phone number');
+      }
+
+      const valid = await verifyOtp(pending.target, 'PHONE_VERIFY', req.body.code);
+      if (!valid) throw new ApiError(400, 'Invalid or expired code');
+
+      return finishPendingSignup(req, res, pending);
+    }
+
     const user = await findUserForOtp(req, 'phone');
     if (!user?.phone) throw new ApiError(400, 'No phone number on account');
     if (user.phoneVerified)
@@ -516,6 +635,24 @@ router.post(
   '/email/send-otp',
   optionalAuth,
   asyncHandler(async (req: any, res) => {
+    const pending = readPendingSignup(req);
+    const requested = (req.body?.email || req.body?.identifier)?.toLowerCase();
+
+    if (pending?.verificationType === 'email') {
+      if (requested && requested !== pending.target) {
+        throw new ApiError(400, 'This signup is for a different email address');
+      }
+
+      const code = await createOtp(pending.target, 'EMAIL_VERIFY');
+      await sendOtpEmail(pending.target, code);
+
+      return res.json({
+        status: 'success',
+        message: 'Code sent to your email',
+        ...(process.env.NODE_ENV !== 'production' ? { __dev_code: code } : {}),
+      });
+    }
+
     const user = await findUserForOtp(req, 'email');
     if (
       !user?.email ||
@@ -539,6 +676,20 @@ router.post(
   optionalAuth,
   validate(otpSchema),
   asyncHandler(async (req: any, res) => {
+    const pending = readPendingSignup(req);
+    const requested = (req.body.email || req.body.identifier)?.toLowerCase();
+
+    if (pending?.verificationType === 'email') {
+      if (requested && requested !== pending.target) {
+        throw new ApiError(400, 'This code is for a different email address');
+      }
+
+      const valid = await verifyOtp(pending.target, 'EMAIL_VERIFY', req.body.code);
+      if (!valid) throw new ApiError(400, 'Invalid or expired code');
+
+      return finishPendingSignup(req, res, pending);
+    }
+
     const user = await findUserForOtp(req, 'email');
     if (
       !user?.email ||
