@@ -83,9 +83,22 @@ export async function sendSms(to: string, message: string): Promise<void> {
     throw new Error(`SMS gateway returned no recipient status: ${gatewayMessage}`);
   }
 
-  // 101 = Success. 102 = Queued/Sent in some AT environments.
-  if (![101, 102].includes(Number(recipient.statusCode))) {
-    throw new Error(`SMS rejected for ${recipient.number}: ${recipient.status || data.SMSMessageData?.Message || 'Unknown error'}`);
+  const statusCode = Number(recipient.statusCode);
+  const status = String(recipient.status || '').trim().toLowerCase();
+  const gatewayMessage = String(data.SMSMessageData?.Message || '').trim().toLowerCase();
+
+  // Africa's Talking can return a delivered/accepted recipient with status
+  // "Success" even when statusCode is missing, empty, or not numeric.
+  // Treat both the documented numeric success codes and textual Success as OK.
+  const accepted =
+    [101, 102].includes(statusCode) ||
+    status === 'success' ||
+    gatewayMessage === 'sent to 1/1 total recipients';
+
+  if (!accepted) {
+    throw new Error(
+      `SMS rejected for ${recipient.number}: ${recipient.status || data.SMSMessageData?.Message || 'Unknown error'}`
+    );
   }
 }
 
