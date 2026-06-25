@@ -234,18 +234,11 @@ router.post(
       },
     });
 
-    if (phone) {
-      createOtp(phone, 'PHONE_VERIFY')
-        .then((code) =>
-          trySendSms(phone, `Classic Closet: Your code is ${code}. Expires 10 min.`)
-        )
-        .catch((e) => console.error('[auth] phone OTP send:', e));
-    }
-    if (email) {
-      createOtp(storedEmail, 'EMAIL_VERIFY')
-        .then((code) => sendOtpEmail(storedEmail, code))
-        .catch((e) => console.error('[auth] email OTP send:', e));
-    }
+    // OTP delivery is intentionally triggered by the frontend OTP step via
+    // /phone/send-otp or /email/send-otp after this session is issued.
+    // This avoids a fire-and-forget send that can fail silently and lets the
+    // browser show the real delivery error to the customer.
+
 
     return issueSession(req, res, user, 201);
   })
