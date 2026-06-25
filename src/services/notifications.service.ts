@@ -12,14 +12,18 @@
  * it as soon as your phone has any signal, exactly like a regular text.
  */
 
-import { trySendSms } from './sms.service.js';
-import { env } from '../config/env.js';
+import { sendSms } from './sms.service.js';
 
-// Normalise any Kenyan phone format to E.164 without the leading +
-// so Africa's Talking receives it in the format it expects.
+// Normalise any Kenyan phone format to E.164.
+// Works for Safaricom/Airtel/Telkom Kenyan mobile numbers when supplied as:
+//   07XXXXXXXX / 01XXXXXXXX / 254XXXXXXXXX / +254XXXXXXXXX
 function normalizeOwnerPhone(raw: string): string {
-  let v = raw.trim().replace(/[\s\-()+]/g, '');
+  let v = raw.trim().replace(/[\s\-()]/g, '');
   if (v.startsWith('07') || v.startsWith('01')) v = `254${v.slice(1)}`;
+  if (!v.startsWith('+')) v = `+${v}`;
+  if (!/^\+254(7|1)\d{8}$/.test(v)) {
+    throw new Error(`OWNER_PHONE must be a valid Kenyan mobile number, got: ${raw}`);
+  }
   return v;
 }
 
@@ -41,7 +45,14 @@ export async function notifyOwnerPaymentReceived(params: {
     return;
   }
 
-  const phone = normalizeOwnerPhone(ownerPhone);
+  let phone: string;
+  try {
+    phone = normalizeOwnerPhone(ownerPhone);
+  } catch (err) {
+    console.error('[notify] invalid OWNER_PHONE:', err);
+    return;
+  }
+
   const method = params.method === 'MPESA' ? 'M-Pesa'
     : params.method === 'PAYSTACK' ? 'Card'
     : params.method;
@@ -53,5 +64,11 @@ export async function notifyOwnerPaymentReceived(params: {
     `Customer: ${params.customerName}` +
     ref;
 
-  await trySendSms(phone, message);
+  try {
+    await sendSms(phone, message);
+    console.info(`[notify] owner SMS sent to ${phone} for order ${params.orderNumber}`);
+  } catch (err) {
+    // Owner notifications must never break a confirmed payment.
+    console.error('[notify] owner SMS failed:', err);
+  }
 }
