@@ -51,7 +51,10 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
 
   const order = await prisma.order.findUnique({
     where: { id: orderId },
-    include: { user: { select: { name: true } } },
+    include: {
+      user: { select: { name: true, email: true, phone: true } },
+      payment: { select: { phoneNumber: true, providerRef: true } },
+    },
   });
   if (!order) throw new ApiError(404, 'Order not found');
 
@@ -69,16 +72,64 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
 
   // ── Owner SMS notification ───────────────────────────────────────────────
   // Fires AFTER the transaction commits so a failed SMS never rolls back a
-  // confirmed payment. We await it so serverless platforms do not freeze/exit
-  // the function before the SMS request is sent. notifyOwnerPaymentReceived
-  // catches and logs its own errors.
+  // confirmed payment. It is awaited so Vercel/serverless does not freeze the
+  // function before Africa's Talking receives the SMS request.
+  const o = order as any;
+
+  const billingName =
+    o.billingName ??
+    o.customerName ??
+    o.fullName ??
+    o.name ??
+    o.user?.name ??
+    'Customer';
+
+  const billingEmail =
+    o.billingEmail ??
+    o.customerEmail ??
+    o.email ??
+    (o.user?.email && !String(o.user.email).endsWith('@phone.classic-closet.local')
+      ? o.user.email
+      : null);
+
+  const billingPhone =
+    o.billingPhone ??
+    o.customerPhone ??
+    o.phone ??
+    o.phoneNumber ??
+    o.mpesaPhone ??
+    o.payment?.phoneNumber ??
+    o.user?.phone ??
+    null;
+
+  const billingAddress =
+    o.billingAddress ??
+    o.customerAddress ??
+    o.address ??
+    o.addressLine1 ??
+    o.streetAddress ??
+    o.shippingAddress ??
+    null;
+
   await notifyOwnerPaymentReceived({
     orderNumber: order.orderNumber,
-    customerName: (order as any).user?.name ?? 'Customer',
+    customerName: o.user?.name ?? billingName ?? 'Customer',
     total: Number(order.total),
     method: order.paymentMethod,
     transactionRef: ref,
-  });
+    billing: {
+      name: billingName,
+      email: billingEmail,
+      phone: billingPhone,
+      address: billingAddress,
+      apartment: o.billingApartment ?? o.apartment ?? o.addressLine2 ?? null,
+      city: o.billingCity ?? o.customerCity ?? o.city ?? o.town ?? null,
+      county: o.billingCounty ?? o.customerCounty ?? o.county ?? o.region ?? null,
+      country: o.billingCountry ?? o.country ?? 'Kenya',
+      postalCode: o.billingPostalCode ?? o.postalCode ?? o.zipCode ?? null,
+      notes: o.billingNotes ?? o.deliveryNotes ?? o.notes ?? null,
+    },
+  }).catch((err) => console.error('[notify] owner SMS error:', err));
 }
 
 // ─── Paystack: initialize ─────────────────────────────────────────────────────
@@ -178,6 +229,8 @@ router.post(
       return res.sendStatus(401);
     }
 
+    res.sendStatus(200);
+
     if (req.body.event === 'charge.success') {
       const payment = await prisma.payment.findFirst({
         where: { providerRef: req.body.data.reference },
@@ -204,8 +257,6 @@ router.post(
         }
       }
     }
-
-    return res.sendStatus(200);
   })
 );
 
@@ -242,17 +293,19 @@ router.post(
 router.post(
   '/mpesa/callback',
   asyncHandler(async (req, res) => {
+    res.sendStatus(200); // Acknowledge immediately — Safaricom expects fast ack
+
     const cb = req.body?.Body?.stkCallback;
-    if (!cb) return res.sendStatus(200);
+    if (!cb) return;
 
     const payment = await prisma.payment.findFirst({
       where: { providerRef: cb.CheckoutRequestID },
     });
 
-    if (!payment) return res.sendStatus(200);
+    if (!payment) return;
 
     // Already settled — nothing to do (idempotent, avoids a redundant stkQuery call)
-    if (payment.status === 'COMPLETED') return res.sendStatus(200);
+    if (payment.status === 'COMPLETED') return;
 
     if (cb.ResultCode === 0) {
       // ── FIX: defense-in-depth — confirm with Safaricom's STK Query API ────
@@ -282,7 +335,7 @@ router.post(
         // Do not mark paid, and do not mark failed either — the real
         // transaction may still be processing on Safaricom's side and a
         // later legitimate callback could still arrive. Leave PENDING.
-        return res.sendStatus(200);
+        return;
       }
 
       // Secondary check: the amount Safaricom's callback says was paid must
@@ -304,7 +357,7 @@ router.post(
         console.error(
           `[mpesa-callback] Amount mismatch for order ${payment.orderId}: paid ${callbackAmount}, expected ${order.total}`
         );
-        return res.sendStatus(200); // Flag for manual review — do not auto-mark paid
+        return; // Flag for manual review — do not auto-mark paid
       }
 
       const receipt =
@@ -312,13 +365,9 @@ router.post(
           (x: { Name: string; Value?: string }) => x.Name === 'MpesaReceiptNumber'
         )?.Value || cb.CheckoutRequestID;
 
-      try {
-        await markPaid(payment.orderId, receipt);
-      } catch (err) {
-        console.error('[mpesa-callback] markPaid error:', err);
-      }
-
-      return res.sendStatus(200);
+      await markPaid(payment.orderId, receipt).catch((err) =>
+        console.error('[mpesa-callback] markPaid error:', err)
+      );
     } else {
       // ── Double-release guard ─────────────────────────────────────────────
       // The stale-order cleanup in checkout.routes.ts can independently
@@ -355,8 +404,6 @@ router.post(
           });
         })
         .catch((err) => console.error('[mpesa-callback] release error:', err));
-
-      return res.sendStatus(200);
     }
   })
 );
