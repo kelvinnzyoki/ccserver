@@ -11,6 +11,7 @@ import { paystack } from '../services/paystack.service.js';
 import { mpesa } from '../services/mpesa.service.js';
 import { env } from '../config/env.js';
 import { notifyOwnerPaymentReceived } from '../services/notifications.service.js';
+import { sendOrderPaidEmail } from '../services/email.service.js';
 
 const router = Router();
 
@@ -54,6 +55,11 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
     include: {
       user: { select: { name: true, email: true, phone: true } },
       payment: { select: { phoneNumber: true, providerRef: true } },
+      items: {
+        include: {
+          product: { select: { name: true } },
+        },
+      },
     },
   });
   if (!order) throw new ApiError(404, 'Order not found');
@@ -119,9 +125,13 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
     transactionRef: ref,
     billing: {
       name: billingName,
+      firstName: o.firstName ?? o.billingFirstName ?? null,
+      lastName: o.lastName ?? o.billingLastName ?? null,
       email: billingEmail,
       phone: billingPhone,
       address: billingAddress,
+      address1: o.address1 ?? o.billingAddress1 ?? null,
+      address2: o.address2 ?? o.billingAddress2 ?? null,
       apartment: o.billingApartment ?? o.apartment ?? o.addressLine2 ?? null,
       city: o.billingCity ?? o.customerCity ?? o.city ?? o.town ?? null,
       county: o.billingCounty ?? o.customerCounty ?? o.county ?? o.region ?? null,
@@ -130,6 +140,35 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
       notes: o.billingNotes ?? o.deliveryNotes ?? o.notes ?? null,
     },
   }).catch((err) => console.error('[notify] owner SMS error:', err));
+
+  if (billingEmail) {
+    await sendOrderPaidEmail({
+      to: billingEmail,
+      orderNumber: order.orderNumber,
+      customerName: o.user?.name ?? billingName ?? 'Customer',
+      total: Number(order.total),
+      paymentMethod: order.paymentMethod,
+      transactionRef: ref,
+      billing: {
+        firstName: o.firstName ?? o.billingFirstName ?? null,
+        lastName: o.lastName ?? o.billingLastName ?? null,
+        phone: billingPhone,
+        email: billingEmail,
+        address1: o.address1 ?? o.billingAddress1 ?? billingAddress ?? null,
+        address2: o.address2 ?? o.billingAddress2 ?? o.billingApartment ?? o.apartment ?? o.addressLine2 ?? null,
+        city: o.billingCity ?? o.customerCity ?? o.city ?? o.town ?? null,
+        county: o.billingCounty ?? o.customerCounty ?? o.county ?? o.region ?? null,
+        postalCode: o.billingPostalCode ?? o.postalCode ?? o.zipCode ?? null,
+        country: o.billingCountry ?? o.country ?? 'Kenya',
+      },
+      items: (o.items ?? []).map((item: any) => ({
+        name: item.product?.name ?? item.name ?? 'Product',
+        quantity: item.quantity,
+        price: item.price,
+        size: item.size ?? null,
+      })),
+    }).catch((err) => console.error('[notify] customer order email error:', err));
+  }
 }
 
 // ─── Paystack: initialize ─────────────────────────────────────────────────────
