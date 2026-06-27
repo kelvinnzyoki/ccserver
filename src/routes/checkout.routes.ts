@@ -138,12 +138,21 @@ router.post(
         }
       }
 
+      const shippingAddress = req.body.shippingAddress;
+
       const address = await tx.address.create({
         data: {
-          ...req.body.shippingAddress,
+          firstName: shippingAddress.firstName,
+          lastName: shippingAddress.lastName,
+          phone: shippingAddress.phone,
+          email: shippingAddress.email || req.user!.email,
+          address1: shippingAddress.address1,
+          address2: shippingAddress.address2,
+          city: shippingAddress.city,
+          county: shippingAddress.county,
+          postalCode: shippingAddress.postalCode,
+          country: shippingAddress.country || 'Kenya',
           userId: req.user!.id,
-          email:
-            req.body.shippingAddress.email || req.user!.email,
         },
       });
 
@@ -151,7 +160,7 @@ router.post(
         data: {
           orderNumber: makeOrderNumber(),
           userId: req.user!.id,
-          email: req.user!.email,
+          email: address.email || req.user!.email,
           subtotal,
           shippingCost,
           total,
