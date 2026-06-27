@@ -16,9 +16,13 @@ import { trySendSms } from './sms.service.js';
 
 type BillingInfo = {
   name?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
   email?: string | null;
   phone?: string | null;
   address?: string | null;
+  address1?: string | null;
+  address2?: string | null;
   apartment?: string | null;
   city?: string | null;
   county?: string | null;
@@ -76,16 +80,25 @@ export async function notifyOwnerPaymentReceived(params: {
     : params.method;
 
   const billing = params.billing ?? {};
-  const billingName = clean(billing.name) || clean(params.customerName) || 'Customer';
+  const firstName = clean(billing.firstName);
+  const lastName = clean(billing.lastName);
+  const fullNameFromParts = joinParts([firstName, lastName]).replace(', ', ' ');
+  const billingName = clean(billing.name) || fullNameFromParts || clean(params.customerName) || 'Customer';
   const billingPhone = clean(billing.phone);
   const billingEmail = clean(billing.email);
+
+  // Checkout addresses are stored as address1/address2 in checkout.routes.ts.
+  // Older notification callers may pass address/apartment instead. Support both
+  // so the owner SMS does not fall back to only "Kenya".
+  const streetAddress = clean(billing.address1) || clean(billing.address);
+  const extraAddress = clean(billing.address2) || clean(billing.apartment);
   const billingAddress = joinParts([
-    billing.address,
-    billing.apartment,
+    streetAddress,
+    extraAddress,
     billing.city,
     billing.county,
-    billing.country,
     billing.postalCode,
+    billing.country,
   ]);
   const notes = clean(billing.notes);
 
