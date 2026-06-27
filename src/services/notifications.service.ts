@@ -92,14 +92,16 @@ export async function notifyOwnerPaymentReceived(params: {
   // so the owner SMS does not fall back to only "Kenya".
   const streetAddress = clean(billing.address1) || clean(billing.address);
   const extraAddress = clean(billing.address2) || clean(billing.apartment);
-  const billingAddress = joinParts([
+  const addressParts = [
     streetAddress,
     extraAddress,
     billing.city,
     billing.county,
     billing.postalCode,
-    billing.country,
-  ]);
+  ];
+  const billingAddress = addressParts.some((part) => clean(part))
+    ? joinParts([...addressParts, billing.country])
+    : '';
   const notes = clean(billing.notes);
 
   const lines = [

@@ -104,14 +104,16 @@ export async function sendOrderPaidEmail(params: {
     || joinParts([billing.firstName, billing.lastName]).replace(', ', ' ')
     || 'Customer';
 
-  const address = joinParts([
+  const addressParts = [
     billing.address1,
     billing.address2,
     billing.city,
     billing.county,
     billing.postalCode,
-    billing.country,
-  ]);
+  ];
+  const address = addressParts.some((part) => clean(part))
+    ? joinParts([...addressParts, billing.country])
+    : '';
 
   const paymentMethod = params.paymentMethod === 'PAYSTACK'
     ? 'Card / Paystack'
