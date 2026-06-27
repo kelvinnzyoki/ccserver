@@ -55,6 +55,20 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
     include: {
       user: { select: { name: true, email: true, phone: true } },
       payment: { select: { phoneNumber: true, providerRef: true } },
+      shippingAddress: {
+        select: {
+          firstName: true,
+          lastName: true,
+          phone: true,
+          email: true,
+          address1: true,
+          address2: true,
+          city: true,
+          county: true,
+          postalCode: true,
+          country: true,
+        },
+      },
       items: {
         include: {
           product: { select: { name: true } },
@@ -81,16 +95,24 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
   // confirmed payment. It is awaited so Vercel/serverless does not freeze the
   // function before Africa's Talking receives the SMS request.
   const o = order as any;
+  const shippingAddress = o.shippingAddress ?? {};
+
+  const shippingName = [shippingAddress.firstName, shippingAddress.lastName]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
 
   const billingName =
-    o.billingName ??
-    o.customerName ??
-    o.fullName ??
-    o.name ??
-    o.user?.name ??
+    shippingName ||
+    o.billingName ||
+    o.customerName ||
+    o.fullName ||
+    o.name ||
+    o.user?.name ||
     'Customer';
 
   const billingEmail =
+    shippingAddress.email ??
     o.billingEmail ??
     o.customerEmail ??
     o.email ??
@@ -99,6 +121,7 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
       : null);
 
   const billingPhone =
+    shippingAddress.phone ??
     o.billingPhone ??
     o.customerPhone ??
     o.phone ??
@@ -109,12 +132,12 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
     null;
 
   const billingAddress =
+    shippingAddress.address1 ??
     o.billingAddress ??
     o.customerAddress ??
     o.address ??
     o.addressLine1 ??
     o.streetAddress ??
-    o.shippingAddress ??
     null;
 
   await notifyOwnerPaymentReceived({
@@ -125,18 +148,18 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
     transactionRef: ref,
     billing: {
       name: billingName,
-      firstName: o.firstName ?? o.billingFirstName ?? null,
-      lastName: o.lastName ?? o.billingLastName ?? null,
+      firstName: shippingAddress.firstName ?? o.firstName ?? o.billingFirstName ?? null,
+      lastName: shippingAddress.lastName ?? o.lastName ?? o.billingLastName ?? null,
       email: billingEmail,
       phone: billingPhone,
       address: billingAddress,
-      address1: o.address1 ?? o.billingAddress1 ?? null,
-      address2: o.address2 ?? o.billingAddress2 ?? null,
+      address1: shippingAddress.address1 ?? o.address1 ?? o.billingAddress1 ?? null,
+      address2: shippingAddress.address2 ?? o.address2 ?? o.billingAddress2 ?? null,
       apartment: o.billingApartment ?? o.apartment ?? o.addressLine2 ?? null,
-      city: o.billingCity ?? o.customerCity ?? o.city ?? o.town ?? null,
-      county: o.billingCounty ?? o.customerCounty ?? o.county ?? o.region ?? null,
-      country: o.billingCountry ?? o.country ?? 'Kenya',
-      postalCode: o.billingPostalCode ?? o.postalCode ?? o.zipCode ?? null,
+      city: shippingAddress.city ?? o.billingCity ?? o.customerCity ?? o.city ?? o.town ?? null,
+      county: shippingAddress.county ?? o.billingCounty ?? o.customerCounty ?? o.county ?? o.region ?? null,
+      country: shippingAddress.country ?? o.billingCountry ?? o.country ?? 'Kenya',
+      postalCode: shippingAddress.postalCode ?? o.billingPostalCode ?? o.postalCode ?? o.zipCode ?? null,
       notes: o.billingNotes ?? o.deliveryNotes ?? o.notes ?? null,
     },
   }).catch((err) => console.error('[notify] owner SMS error:', err));
@@ -150,16 +173,16 @@ async function markPaid(orderId: string, ref: string): Promise<void> {
       paymentMethod: order.paymentMethod,
       transactionRef: ref,
       billing: {
-        firstName: o.firstName ?? o.billingFirstName ?? null,
-        lastName: o.lastName ?? o.billingLastName ?? null,
+        firstName: shippingAddress.firstName ?? o.firstName ?? o.billingFirstName ?? null,
+        lastName: shippingAddress.lastName ?? o.lastName ?? o.billingLastName ?? null,
         phone: billingPhone,
         email: billingEmail,
-        address1: o.address1 ?? o.billingAddress1 ?? billingAddress ?? null,
-        address2: o.address2 ?? o.billingAddress2 ?? o.billingApartment ?? o.apartment ?? o.addressLine2 ?? null,
-        city: o.billingCity ?? o.customerCity ?? o.city ?? o.town ?? null,
-        county: o.billingCounty ?? o.customerCounty ?? o.county ?? o.region ?? null,
-        postalCode: o.billingPostalCode ?? o.postalCode ?? o.zipCode ?? null,
-        country: o.billingCountry ?? o.country ?? 'Kenya',
+        address1: shippingAddress.address1 ?? o.address1 ?? o.billingAddress1 ?? billingAddress ?? null,
+        address2: shippingAddress.address2 ?? o.address2 ?? o.billingAddress2 ?? o.billingApartment ?? o.apartment ?? o.addressLine2 ?? null,
+        city: shippingAddress.city ?? o.billingCity ?? o.customerCity ?? o.city ?? o.town ?? null,
+        county: shippingAddress.county ?? o.billingCounty ?? o.customerCounty ?? o.county ?? o.region ?? null,
+        postalCode: shippingAddress.postalCode ?? o.billingPostalCode ?? o.postalCode ?? o.zipCode ?? null,
+        country: shippingAddress.country ?? o.billingCountry ?? o.country ?? 'Kenya',
       },
       items: (o.items ?? []).map((item: any) => ({
         name: item.product?.name ?? item.name ?? 'Product',
