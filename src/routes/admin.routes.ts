@@ -6,6 +6,7 @@ import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiError } from '../utils/apiError.js';
+import { sendDeliveredOrderConfirmation } from '../services/delivered-order.service.js';
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -261,7 +262,39 @@ router.patch(
       data: { status: req.body.status },
     });
 
-    res.json({ status: 'success', data: { order: updated } });
+    let deliveredEmailSent = false;
+    let deliveredEmailWarning: string | null = null;
+
+    // Send the customer a premium delivery confirmation email + PDF receipt
+    // only when the order transitions into DELIVERED. This prevents duplicate
+    // emails when an admin clicks DELIVERED again or refreshes the page.
+    if (req.body.status === 'DELIVERED' && order.status !== 'DELIVERED') {
+      const deliveredOrder = await prisma.order.findUnique({
+        where: { id: req.params.id },
+        include: {
+          items: true,
+          payment: true,
+          user: true,
+          shippingAddress: true,
+        },
+      });
+
+      if (deliveredOrder) {
+        try {
+          await sendDeliveredOrderConfirmation(deliveredOrder);
+          deliveredEmailSent = true;
+        } catch (err) {
+          deliveredEmailWarning =
+            err instanceof Error ? err.message : 'Delivered email could not be sent.';
+          console.error('[ADMIN] delivered email failure:', err);
+        }
+      }
+    }
+
+    res.json({
+      status: 'success',
+      data: { order: updated, deliveredEmailSent, deliveredEmailWarning },
+    });
   })
 );
 
